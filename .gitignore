@@ -3,7 +3,5 @@ tapes/*.tape
 agents/.venv/
 __pycache__/
 .DS_Store
-# local assistant files, never committed
-claude.md
-CLAUDE.md
+# local assistant state
 .claude/
