@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/types", "crates/api", "crates/feed", "crates/tape", "bin/record", "bin/replay"]
+members = ["crates/types", "crates/api", "crates/feed", "crates/book", "crates/tape", "bin/record", "bin/replay"]
 
 [workspace.package]
 edition = "2021"
@@ -23,3 +23,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "1"
 criterion = "0.5"
+proptest = "1"
