@@ -1,0 +1,11 @@
+[package]
+name = "replay"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+types = { path = "../../crates/types" }
+feed = { path = "../../crates/feed" }
+tape = { path = "../../crates/tape" }
+clap.workspace = true

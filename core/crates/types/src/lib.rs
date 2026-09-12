@@ -50,7 +50,10 @@ pub struct TradeEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResyncReason {
     ChecksumMismatch,
+    /// A snapshot arrived that we did not ask for.
     SequenceGap,
+    /// Socket open and heartbeats flowing, but no book message for the silence window.
+    Silent,
     Disconnected,
 }
 
