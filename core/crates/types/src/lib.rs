@@ -1,6 +1,7 @@
 //! Shared core types. Fixed-point int64 everywhere; scales live on Instrument.
 
 mod instrument;
+pub mod instruments;
 mod scalar;
 
 pub use instrument::Instrument;
@@ -68,6 +69,8 @@ pub enum OrderState {
     Open,
     PartiallyFilled,
     Filled,
+    PendingCancel,
+    /// IOC and FOK orders that do not fill end here, with a reason on the order.
     Canceled,
     Rejected,
 }
@@ -78,15 +81,6 @@ impl OrderState {
     }
 }
 
-/// Numbering matches proto IntentType.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IntentType {
-    Place = 1,
-    Cancel = 2,
-    Flatten = 3,
-    Noop = 4,
-}
-
 /// Numbering matches proto TimeInForce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimeInForce {
@@ -95,21 +89,34 @@ pub enum TimeInForce {
     Fok = 3,
 }
 
-/// Typed mirror of proto SubmitIntentRequest.
+/// A validated intent. crates/api builds this from SubmitIntentRequest and
+/// rejects anything unspecified or malformed with RejectionCode::InvalidIntent.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Intent {
+pub enum Intent {
+    Place {
+        side: Side,
+        price: Price,
+        stop: Price,
+        qty: Qty,
+        tif: TimeInForce,
+    },
+    Cancel {
+        order_id: u64,
+    },
+    Flatten,
+    Noop,
+}
+
+/// Who sent an intent and against which state. Travels alongside Intent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntentEnvelope {
     pub intent_id: String,
     pub agent_id: String,
     pub source_sequence_id: u64,
     pub generated_time_ns: i64,
-    pub intent_type: IntentType,
     pub venue: String,
     pub symbol: String,
-    pub side: Option<Side>,
-    pub time_in_force: Option<TimeInForce>,
-    pub target_price: Price,
-    pub stop_loss: Price,
-    pub quantity: Qty,
+    pub intent: Intent,
 }
 
 /// Numbering matches proto RejectionCode.
@@ -125,4 +132,5 @@ pub enum RejectionCode {
     RateLimitExceeded = 7,
     MissingStop = 8,
     PriceOutOfBand = 9,
+    InvalidIntent = 10,
 }
