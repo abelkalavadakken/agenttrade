@@ -6,12 +6,15 @@ license.workspace = true
 
 [dependencies]
 types = { path = "../types" }
+book = { path = "../book" }
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-crc32fast.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+book = { path = "../book" }

@@ -1,8 +1,7 @@
 //! Parser, checksum and gap detection against captured Kraken v2 frames.
 
-use std::collections::BTreeMap;
-
-use feed::kraken::{book_checksum, MsgKind, Tracker};
+use book::Book;
+use feed::kraken::{MsgKind, Tracker};
 use types::{instruments, BookEvent, FeedEvent, ResyncReason};
 
 const FIXTURE: &str = include_str!("../../../../tests/fixtures/kraken_book_btcusd.jsonl");
@@ -43,8 +42,13 @@ fn parses_every_captured_frame_and_verifies_every_checksum() {
     }
     let s = t.stats();
     assert_eq!(s.snapshots, 1);
+    assert_eq!(
+        s.updates, 77,
+        "zero failures below are over this many updates"
+    );
     assert_eq!(s.checksum_failures, 0);
-    assert_eq!(s.gaps, 0);
+    assert_eq!(s.crossed, 0);
+    assert_eq!(s.unsolicited_snapshots, 0);
     assert_eq!(s.unparsed, 0);
     assert!(s.heartbeats > 0);
     assert_eq!(books as u64, s.snapshots + s.updates);
@@ -70,18 +74,15 @@ fn snapshot_parses_to_fixed_point() {
 fn checksum_matches_known_good_snapshot() {
     let mut t = tracker();
     let h = t.on_frame(snapshot_frame().as_bytes());
-    let Some(FeedEvent::Book(BookEvent::Snapshot {
-        bids,
-        asks,
-        checksum,
-    })) = h.events.first()
-    else {
+    let Some(FeedEvent::Book(ev @ BookEvent::Snapshot { checksum, .. })) = h.events.first() else {
         panic!("expected snapshot");
     };
-    let bids: BTreeMap<i64, i64> = bids.iter().map(|l| (l.price.0, l.qty.0)).collect();
-    let asks: BTreeMap<i64, i64> = asks.iter().map(|l| (l.price.0, l.qty.0)).collect();
-    assert_eq!(book_checksum(&asks, &bids, 10), *checksum);
-    assert_ne!(book_checksum(&asks, &bids, 9), *checksum);
+    let mut book = Book::new(10);
+    book.apply(ev).unwrap();
+    assert_eq!(book.checksum(), *checksum);
+    assert_eq!(t.book().checksum(), *checksum);
+    assert_ne!(Book::new(9).checksum(), *checksum);
+    assert!(!t.book().is_stale());
 }
 
 #[test]
@@ -100,6 +101,7 @@ fn checksum_mismatch_triggers_resync_and_drops_book() {
     );
     assert!(!t.has_book());
     assert_eq!(t.stats().checksum_failures, 1);
+    assert!(t.book().is_stale());
 }
 
 #[test]
@@ -128,7 +130,7 @@ fn unsolicited_snapshot_is_a_gap() {
     );
     assert!(!second.resubscribe, "the snapshot itself is a fresh book");
     assert!(t.has_book());
-    assert_eq!(t.stats().gaps, 1);
+    assert_eq!(t.stats().unsolicited_snapshots, 1);
 
     // After an explicit resubscribe, the snapshot is expected again.
     t.expect_snapshot();
@@ -137,7 +139,7 @@ fn unsolicited_snapshot_is_a_gap() {
         .events
         .iter()
         .all(|e| !matches!(e, FeedEvent::Resync(_))));
-    assert_eq!(t.stats().gaps, 1);
+    assert_eq!(t.stats().unsolicited_snapshots, 1);
 }
 
 #[test]
@@ -163,7 +165,7 @@ fn synthetic_sequence_gap_then_recovery() {
         let h = t.on_frame(u.as_bytes());
         assert!(!h.resubscribe);
     }
-    assert_eq!(t.stats().gaps, 1);
+    assert_eq!(t.stats().unsolicited_snapshots, 1);
     assert_eq!(t.stats().checksum_failures, 0);
 }
 

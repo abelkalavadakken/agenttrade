@@ -7,10 +7,9 @@ One module per venue. Each venue splits into a pure tracker and a socket client.
 WebSocket v2, `wss://ws.kraken.com/v2`, book channel, depth 10.
 
 **Tracker** (`kraken::Tracker`) is bytes in, events out, no clock, no socket.
-It parses frames, keeps the top-N book per side, applies deltas in order
-(the same price can repeat in one update), truncates to depth, and verifies
-the venue checksum after every snapshot and update. Numbers are parsed from
-their JSON text straight to fixed-point; no float is ever built.
+It parses frames to `BookEvent` and applies them to a `book::Book`, which
+owns the delta rules and the checksum. Numbers are parsed from their JSON
+text straight to fixed-point; no float is ever built.
 
 Checksum: CRC32 over the top-N asks ascending then top-N bids descending,
 each level as price then qty with the decimal point and leading zeros
@@ -23,6 +22,7 @@ checksum input is the integer values printed back to back. Verified against
 | Reason | Trigger | Then |
 |---|---|---|
 | ChecksumMismatch | computed crc differs from venue crc | drop book, unsubscribe, resubscribe |
+| Crossed | crc verified but best bid met or crossed best ask | drop book, unsubscribe, resubscribe |
 | UnsolicitedSnapshot | a snapshot arrives we did not ask for | accept it as the new book |
 | Silent | socket open, heartbeats flowing, no book message for 10 s | unsubscribe, resubscribe |
 | Disconnected | socket closed, error, or no frame at all for 10 s | reconnect with backoff |

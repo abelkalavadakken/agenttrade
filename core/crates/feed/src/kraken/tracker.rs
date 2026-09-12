@@ -1,10 +1,9 @@
 //! Pure Kraken book tracker. Bytes in, events out. No clock, no socket.
+//! The book itself lives in crates/book; this module owns the venue protocol.
 
-use std::collections::BTreeMap;
+use book::{ApplyError, Book};
+use types::{BookEvent, FeedEvent, Instrument, Level, ResyncReason};
 
-use types::{BookEvent, FeedEvent, Instrument, Level, Qty, ResyncReason};
-
-use super::checksum::book_checksum;
 use super::wire::{BookFrame, Frame, WireLevel};
 use crate::time::parse_rfc3339_ns;
 
@@ -36,16 +35,15 @@ pub struct TrackerStats {
     pub updates: u64,
     pub heartbeats: u64,
     pub checksum_failures: u64,
-    pub gaps: u64,
+    pub crossed: u64,
+    pub unsolicited_snapshots: u64,
     pub unparsed: u64,
     pub ignored_updates: u64,
 }
 
 pub struct Tracker {
     instrument: Instrument,
-    depth: usize,
-    bids: BTreeMap<i64, i64>,
-    asks: BTreeMap<i64, i64>,
+    book: Book,
     /// True between (re)subscribe and the snapshot that answers it.
     expect_snapshot: bool,
     stats: TrackerStats,
@@ -55,9 +53,7 @@ impl Tracker {
     pub fn new(instrument: Instrument, depth: usize) -> Self {
         Self {
             instrument,
-            depth,
-            bids: BTreeMap::new(),
-            asks: BTreeMap::new(),
+            book: Book::new(depth),
             expect_snapshot: true,
             stats: TrackerStats::default(),
         }
@@ -67,15 +63,18 @@ impl Tracker {
         self.stats
     }
 
+    pub fn book(&self) -> &Book {
+        &self.book
+    }
+
     pub fn has_book(&self) -> bool {
         !self.expect_snapshot
     }
 
-    /// Call after sending a subscribe so the next snapshot is not counted as a gap.
+    /// Call after sending a subscribe so the next snapshot is not counted as unsolicited.
     pub fn expect_snapshot(&mut self) {
         self.expect_snapshot = true;
-        self.bids.clear();
-        self.asks.clear();
+        self.book.mark_stale();
     }
 
     /// Drop the book for a reason decided outside the tracker (silence, disconnect).
@@ -128,91 +127,63 @@ impl Tracker {
             else {
                 return self.unparsed();
             };
-            match frame.kind {
-                "snapshot" => self.apply_snapshot(bids, asks, data.checksum, &mut out),
+            let event = match frame.kind {
+                "snapshot" => {
+                    out.kind = Some(MsgKind::Snapshot);
+                    self.stats.snapshots += 1;
+                    if !self.expect_snapshot {
+                        self.stats.unsolicited_snapshots += 1;
+                        out.events
+                            .push(FeedEvent::Resync(ResyncReason::UnsolicitedSnapshot));
+                    }
+                    self.expect_snapshot = false;
+                    BookEvent::Snapshot {
+                        bids,
+                        asks,
+                        checksum: data.checksum,
+                    }
+                }
                 "update" => {
-                    let ts = data.timestamp.and_then(parse_rfc3339_ns).unwrap_or(0);
-                    self.apply_update(bids, asks, data.checksum, ts, &mut out);
+                    out.kind = Some(MsgKind::Update);
+                    self.stats.updates += 1;
+                    if self.expect_snapshot {
+                        self.stats.ignored_updates += 1;
+                        continue;
+                    }
+                    BookEvent::Delta {
+                        bids,
+                        asks,
+                        checksum: data.checksum,
+                        venue_time_ns: data.timestamp.and_then(parse_rfc3339_ns).unwrap_or(0),
+                    }
                 }
                 _ => return self.unparsed(),
-            }
-            if out.resubscribe {
-                break;
+            };
+            match self.book.apply(&event) {
+                Ok(()) => out.events.push(FeedEvent::Book(event)),
+                Err(e) => {
+                    self.fail(e, &mut out);
+                    break;
+                }
             }
         }
         out
     }
 
-    fn apply_snapshot(
-        &mut self,
-        bids: Vec<Level>,
-        asks: Vec<Level>,
-        checksum: u32,
-        out: &mut Handled,
-    ) {
-        out.kind = Some(MsgKind::Snapshot);
-        self.stats.snapshots += 1;
-        if !self.expect_snapshot {
-            self.stats.gaps += 1;
-            out.events
-                .push(FeedEvent::Resync(ResyncReason::UnsolicitedSnapshot));
-        }
-        self.bids = bids.iter().map(|l| (l.price.0, l.qty.0)).collect();
-        self.asks = asks.iter().map(|l| (l.price.0, l.qty.0)).collect();
-        self.expect_snapshot = false;
-        if !self.verify(checksum, out) {
-            return;
-        }
-        out.events.push(FeedEvent::Book(BookEvent::Snapshot {
-            bids,
-            asks,
-            checksum,
-        }));
-    }
-
-    fn apply_update(
-        &mut self,
-        bids: Vec<Level>,
-        asks: Vec<Level>,
-        checksum: u32,
-        venue_time_ns: i64,
-        out: &mut Handled,
-    ) {
-        out.kind = Some(MsgKind::Update);
-        self.stats.updates += 1;
-        if self.expect_snapshot {
-            self.stats.ignored_updates += 1;
-            return;
-        }
-        for l in &bids {
-            apply_level(&mut self.bids, l);
-        }
-        for l in &asks {
-            apply_level(&mut self.asks, l);
-        }
-        truncate_low(&mut self.bids, self.depth);
-        truncate_high(&mut self.asks, self.depth);
-        if !self.verify(checksum, out) {
-            return;
-        }
-        out.events.push(FeedEvent::Book(BookEvent::Delta {
-            bids,
-            asks,
-            checksum,
-            venue_time_ns,
-        }));
-    }
-
-    fn verify(&mut self, expected: u32, out: &mut Handled) -> bool {
-        if book_checksum(&self.asks, &self.bids, self.depth) == expected {
-            return true;
-        }
-        self.stats.checksum_failures += 1;
+    fn fail(&mut self, e: ApplyError, out: &mut Handled) {
+        let reason = match e {
+            ApplyError::Crossed => {
+                self.stats.crossed += 1;
+                ResyncReason::Crossed
+            }
+            ApplyError::Checksum { .. } | ApplyError::NoSnapshot => {
+                self.stats.checksum_failures += 1;
+                ResyncReason::ChecksumMismatch
+            }
+        };
         self.expect_snapshot();
-        out.events
-            .push(FeedEvent::Resync(ResyncReason::ChecksumMismatch));
+        out.events.push(FeedEvent::Resync(reason));
         out.resubscribe = true;
-        false
     }
 
     fn levels(&self, wire: &[WireLevel]) -> Option<Vec<Level>> {
@@ -233,27 +204,5 @@ impl Handled {
             kind: Some(kind),
             ..Default::default()
         }
-    }
-}
-
-fn apply_level(side: &mut BTreeMap<i64, i64>, l: &Level) {
-    if l.qty == Qty::ZERO {
-        side.remove(&l.price.0);
-    } else {
-        side.insert(l.price.0, l.qty.0);
-    }
-}
-
-/// Bids: keep the highest `depth` prices.
-fn truncate_low(side: &mut BTreeMap<i64, i64>, depth: usize) {
-    while side.len() > depth {
-        side.pop_first();
-    }
-}
-
-/// Asks: keep the lowest `depth` prices.
-fn truncate_high(side: &mut BTreeMap<i64, i64>, depth: usize) {
-    while side.len() > depth {
-        side.pop_last();
     }
 }
