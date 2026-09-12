@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/types", "crates/api"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+prost = "0.13"
+tonic = "0.12"
+tonic-build = "0.12"

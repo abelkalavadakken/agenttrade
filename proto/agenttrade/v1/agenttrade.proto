@@ -1,0 +1,146 @@
+syntax = "proto3";
+
+package agenttrade.v1;
+
+// Service exposed by the Rust Core to Python Agents
+service AgentCoreService {
+  rpc GetState(GetStateRequest) returns (GetStateResponse);
+  rpc SubmitIntent(SubmitIntentRequest) returns (SubmitIntentResponse);
+  rpc StreamEvents(StreamEventsRequest) returns (stream MarketEvent);
+  rpc ListInstruments(ListInstrumentsRequest) returns (ListInstrumentsResponse);
+}
+
+// ---------------- Metadata & Types ----------------
+message Instrument {
+  string venue = 1;
+  string symbol = 2;
+  int32 price_scale = 3;  // e.g., 8 for 1e-8
+  int32 qty_scale = 4;
+  int64 min_tick_size = 5;
+  int64 min_lot_size = 6;
+}
+
+// ---------------- Enums ----------------
+enum OrderSide {
+  SIDE_UNSPECIFIED = 0;
+  BUY = 1;
+  SELL = 2;
+}
+
+enum IntentType {
+  INTENT_UNSPECIFIED = 0;
+  PLACE = 1;
+  CANCEL = 2;
+  FLATTEN = 3;
+  NOOP = 4;
+}
+
+enum TimeInForce {
+  TIF_UNSPECIFIED = 0;
+  GTC = 1; // Good Til Canceled
+  IOC = 2; // Immediate or Cancel
+  FOK = 3; // Fill or Kill
+}
+
+enum RiskDecision {
+  DECISION_UNSPECIFIED = 0;
+  APPROVED = 1;
+  REJECTED = 2;
+}
+
+enum RejectionCode {
+  NONE = 0;
+  STALE_STATE = 1;
+  EXCEEDS_MAX_LEVERAGE = 2;
+  EXCEEDS_SINGLE_LOSS_LIMIT = 3;
+  INVALID_TICK_SIZE = 4;
+  VENUE_DISCONNECTED = 5;
+  KILL_SWITCH_ACTIVE = 6;
+  RATE_LIMIT_EXCEEDED = 7;
+  MISSING_STOP = 8;
+  PRICE_OUT_OF_BAND = 9;
+}
+
+// ---------------- RPC Payloads ----------------
+message ListInstrumentsRequest {}
+
+message ListInstrumentsResponse {
+  repeated Instrument instruments = 1;
+}
+
+message GetStateRequest {
+  string venue = 1;
+  string symbol = 2;
+}
+
+message Position {
+  int64 net_qty = 1; // Positive = Long, Negative = Short, 0 = Flat
+  int64 average_entry_price = 2;
+  int64 unrealized_pnl = 3;
+}
+
+message MarketFeatures {
+  double rsi = 1; 
+  double ema_fast = 2;
+  double ema_slow = 3;
+  int64 order_flow_imbalance = 4;
+}
+
+message GetStateResponse {
+  uint64 sequence_id = 1;
+  int64 timestamp_ns = 2;
+  string venue = 3;
+  string symbol = 4;
+  int64 bid = 5;
+  int64 ask = 6;
+  Position current_position = 7;
+  MarketFeatures features = 8;
+  int64 available_equity = 9;
+}
+
+message SubmitIntentRequest {
+  string intent_id = 1;         
+  string agent_id = 2;          
+  uint64 source_sequence_id = 3; 
+  int64 generated_time_ns = 4;
+  IntentType intent_type = 5;
+  string venue = 6;
+  string symbol = 7;
+  OrderSide side = 8;
+  TimeInForce time_in_force = 9;
+  int64 target_price = 10;
+  int64 stop_loss = 11; // Mandatory for PLACE intents
+  int64 quantity = 12;
+}
+
+message SubmitIntentResponse {
+  string intent_id = 1;
+  RiskDecision decision = 2;
+  RejectionCode rejection_code = 3;
+  string rejection_reason = 4;
+  uint64 executed_order_id = 5; // 0 if rejected
+  int64 processed_time_ns = 6;
+}
+
+message StreamEventsRequest {
+  string venue = 1;
+  string symbol = 2;
+}
+
+message RegimeShiftPayload {
+  string previous_regime = 1;
+  string new_regime = 2;
+  double confidence = 3;
+}
+
+message MarketEvent {
+  uint64 sequence_id = 1;
+  int64 timestamp_ns = 2;
+  string venue = 3;
+  string symbol = 4;
+  oneof event {
+    int64 mid_price_update = 5;
+    Position position_update = 6;
+    RegimeShiftPayload regime_shift = 7;
+  }
+}
