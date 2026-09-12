@@ -59,6 +59,7 @@ enum RejectionCode {
   RATE_LIMIT_EXCEEDED = 7;
   MISSING_STOP = 8;
   PRICE_OUT_OF_BAND = 9;
+  INVALID_INTENT = 10;
 }
 
 // ---------------- RPC Payloads ----------------
