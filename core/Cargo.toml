@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/types", "crates/api"]
+members = ["crates/types", "crates/api", "crates/feed", "crates/tape", "bin/record", "bin/replay"]
 
 [workspace.package]
 edition = "2021"
@@ -11,3 +11,15 @@ license = "UNLICENSED"
 prost = "0.13"
 tonic = "0.12"
 tonic-build = "0.12"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+crc32fast = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1"
+criterion = "0.5"
