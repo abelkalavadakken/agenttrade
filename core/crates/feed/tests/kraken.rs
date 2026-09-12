@@ -124,7 +124,7 @@ fn unsolicited_snapshot_is_a_gap() {
     let second = t.on_frame(snap.as_bytes());
     assert_eq!(
         second.events.first(),
-        Some(&FeedEvent::Resync(ResyncReason::SequenceGap))
+        Some(&FeedEvent::Resync(ResyncReason::UnsolicitedSnapshot))
     );
     assert!(!second.resubscribe, "the snapshot itself is a fresh book");
     assert!(t.has_book());
@@ -150,7 +150,10 @@ fn synthetic_sequence_gap_then_recovery() {
     // Venue restarts the stream mid-flight: snapshot without our asking.
     let h = t.on_frame(snap.as_bytes());
     assert_eq!(h.events.len(), 2);
-    assert_eq!(h.events[0], FeedEvent::Resync(ResyncReason::SequenceGap));
+    assert_eq!(
+        h.events[0],
+        FeedEvent::Resync(ResyncReason::UnsolicitedSnapshot)
+    );
     assert!(matches!(
         h.events[1],
         FeedEvent::Book(BookEvent::Snapshot { .. })

@@ -155,7 +155,7 @@ impl Tracker {
         if !self.expect_snapshot {
             self.stats.gaps += 1;
             out.events
-                .push(FeedEvent::Resync(ResyncReason::SequenceGap));
+                .push(FeedEvent::Resync(ResyncReason::UnsolicitedSnapshot));
         }
         self.bids = bids.iter().map(|l| (l.price.0, l.qty.0)).collect();
         self.asks = asks.iter().map(|l| (l.price.0, l.qty.0)).collect();

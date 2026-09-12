@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn resync_index(r: ResyncReason) -> usize {
     match r {
         ResyncReason::ChecksumMismatch => 0,
-        ResyncReason::SequenceGap => 1,
+        ResyncReason::UnsolicitedSnapshot => 1,
         ResyncReason::Silent => 2,
         ResyncReason::Disconnected => 3,
     }

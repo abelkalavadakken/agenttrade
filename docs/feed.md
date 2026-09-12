@@ -23,7 +23,7 @@ checksum input is the integer values printed back to back. Verified against
 | Reason | Trigger | Then |
 |---|---|---|
 | ChecksumMismatch | computed crc differs from venue crc | drop book, unsubscribe, resubscribe |
-| SequenceGap | a snapshot arrives we did not ask for | accept it as the new book |
+| UnsolicitedSnapshot | a snapshot arrives we did not ask for | accept it as the new book |
 | Silent | socket open, heartbeats flowing, no book message for 10 s | unsubscribe, resubscribe |
 | Disconnected | socket closed, error, or no frame at all for 10 s | reconnect with backoff |
 
@@ -36,6 +36,15 @@ doubles, caps at 30 s. Every raw frame goes downstream before it is parsed
 so the tape sees exactly what the venue sent. Lifecycle messages
 (`connected`, `disconnected <err>`, `resubscribe`) travel as
 `FeedMsg::Control` and the recorder writes them under their own source id.
+
+## Tokio timers and system sleep
+
+Tokio timers run on the monotonic clock, which macOS pauses while the machine
+sleeps. A `--seconds 600` recording on a laptop that sleeps for 35 minutes
+runs 600 awake seconds and spans 35 minutes of wall clock. Each wake-up looks
+like a dead socket (no frames for 10 s) and triggers a reconnect. Tape
+timestamps are wall clock, so replay reports the true span. Keep the machine
+awake for a clean tape.
 
 ## Fixtures
 

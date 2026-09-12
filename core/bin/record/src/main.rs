@@ -38,7 +38,7 @@ struct Counts {
     deltas: u64,
     trades: u64,
     resync_checksum: u64,
-    resync_gap: u64,
+    resync_unsolicited: u64,
     resync_silent: u64,
     resync_disconnect: u64,
     control: u64,
@@ -57,7 +57,9 @@ impl Counts {
                 FeedEvent::Book(types::BookEvent::Delta { .. }) => self.deltas += 1,
                 FeedEvent::Trade(_) => self.trades += 1,
                 FeedEvent::Resync(ResyncReason::ChecksumMismatch) => self.resync_checksum += 1,
-                FeedEvent::Resync(ResyncReason::SequenceGap) => self.resync_gap += 1,
+                FeedEvent::Resync(ResyncReason::UnsolicitedSnapshot) => {
+                    self.resync_unsolicited += 1
+                }
                 FeedEvent::Resync(ResyncReason::Silent) => self.resync_silent += 1,
                 FeedEvent::Resync(ResyncReason::Disconnected) => self.resync_disconnect += 1,
             },
@@ -133,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("deltas          {}", counts.deltas);
     println!("trades          {}", counts.trades);
     println!("resync checksum {}", counts.resync_checksum);
-    println!("resync gap      {}", counts.resync_gap);
+    println!("resync unsolicited {}", counts.resync_unsolicited);
     println!("resync silent   {}", counts.resync_silent);
     println!("resync disconn  {}", counts.resync_disconnect);
     Ok(())

@@ -50,8 +50,8 @@ pub struct TradeEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResyncReason {
     ChecksumMismatch,
-    /// A snapshot arrived that we did not ask for.
-    SequenceGap,
+    /// A snapshot arrived that we did not ask for. Kraken v2 has no sequence numbers.
+    UnsolicitedSnapshot,
     /// Socket open and heartbeats flowing, but no book message for the silence window.
     Silent,
     Disconnected,
