@@ -69,7 +69,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         first_ns.get_or_insert(rec.recv_ns);
         last_ns = rec.recv_ns;
         if rec.source_id != ws_id {
-            controls.push(String::from_utf8_lossy(&rec.bytes).into_owned());
+            let text = String::from_utf8_lossy(&rec.bytes).into_owned();
+            if text == "connected" {
+                // The recorder subscribed on connect; the next snapshot is expected.
+                tracker.expect_snapshot();
+            }
+            controls.push(text);
             continue;
         }
         let handled = tracker.on_frame(&rec.bytes);
@@ -80,9 +85,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if handled.resubscribe {
             // The recorder resubscribed at this point; the next snapshot is expected.
-            tracker.expect_snapshot();
-        }
-        if controls.last().is_some_and(|c| c == "connected") {
             tracker.expect_snapshot();
         }
     }
