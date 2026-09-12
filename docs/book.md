@@ -105,9 +105,10 @@ fn is_stale(&self) -> bool
 fn is_crossed(&self) -> bool
 ```
 
-`mid` rounds down to the tick grid. Half-tick mids are lost. If features
-or risk need the exact midpoint they take `best_bid` and `best_ask` and
-work in doubled units themselves.
+`mid` rounds down to the tick grid, so a half-tick mid loses half a tick.
+It is advisory. Its only consumer in the core is the risk gate's
+out-of-band check, which tolerates a tick. Anything that needs the exact
+midpoint takes `best_bid` and `best_ask` and works in doubled units.
 
 ## Tests
 
@@ -125,14 +126,11 @@ work in doubled units themselves.
   mismatches and p50/p99 apply latency measured with `Instant` around each
   `apply`.
 
-## Open decisions
+## Decisions
 
-1. `MAX_DEPTH = 25` as the compile-time array bound with `depth` chosen at
-   runtime, versus a const generic `Book<const N: usize>`. Fixed bound is
-   simpler and 25 levels is 400 bytes per side.
-2. `mid` rounding down versus returning `None` on a half-tick mid.
-3. proptest is a new dev-dependency. Add to CLAUDE.md as
-   "proptest: property tests for book invariants".
-4. The feed tracker switches to `Book` in this PR (feed depends on book)
-   or in a follow-up. Doing it here removes the duplicate checksum code
-   but widens the PR beyond one crate.
+- Fixed array bound of 25 with runtime depth. Const generic only if a
+  benchmark asks for it.
+- `mid` rounds down on a half-tick. Advisory, see Reads.
+- proptest is a dev-dependency, listed in CLAUDE.md.
+- The feed tracker keeps its own book for now. Switching it to `Book` is a
+  follow-up PR; book/initial ships the crate and its tests only.
