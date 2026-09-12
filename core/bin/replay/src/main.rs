@@ -5,6 +5,9 @@
 
 use std::fs::File;
 use std::path::PathBuf;
+use std::time::Instant;
+
+use book::{ApplyError, Book};
 
 use clap::{Parser, ValueEnum};
 use feed::kraken::Tracker;
@@ -46,6 +49,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .position(|s| s == "kraken.ws")
         .ok_or("tape has no kraken.ws source")? as u16;
     let mut tracker = Tracker::new(instrument, args.depth as usize);
+    let mut book = Book::new(args.depth as usize);
+    let mut applied = 0u64;
+    let mut crossed = 0u64;
+    let mut book_mismatches = 0u64;
+    let mut latencies: Vec<u64> = Vec::new();
 
     let mut records = 0u64;
     let mut bytes = 0u64;
@@ -79,8 +87,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let handled = tracker.on_frame(&rec.bytes);
         for e in handled.events {
-            if let FeedEvent::Resync(r) = e {
-                resyncs[resync_index(r)] += 1;
+            match e {
+                FeedEvent::Resync(r) => {
+                    resyncs[resync_index(r)] += 1;
+                    book.mark_stale();
+                }
+                FeedEvent::Book(ev) => {
+                    let t0 = Instant::now();
+                    let res = book.apply(&ev);
+                    latencies.push(t0.elapsed().as_nanos() as u64);
+                    match res {
+                        Ok(()) => applied += 1,
+                        Err(ApplyError::Crossed) => crossed += 1,
+                        Err(ApplyError::Checksum { .. }) => book_mismatches += 1,
+                        Err(ApplyError::NoSnapshot) => {}
+                    }
+                }
+                FeedEvent::Trade(_) => {}
             }
         }
         if handled.resubscribe {
@@ -104,6 +127,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "resync silent     {}",
         resyncs[resync_index(ResyncReason::Silent)]
+    );
+    latencies.sort_unstable();
+    let pct = |p: f64| -> u64 {
+        if latencies.is_empty() {
+            return 0;
+        }
+        let i = ((latencies.len() as f64 - 1.0) * p).round() as usize;
+        latencies[i]
+    };
+    println!("book applied      {applied}");
+    println!("book crossed      {crossed}");
+    println!("book mismatches   {book_mismatches}");
+    println!("apply p50 ns      {}", pct(0.50));
+    println!("apply p99 ns      {}", pct(0.99));
+    println!(
+        "apply max ns      {}",
+        latencies.last().copied().unwrap_or(0)
     );
     println!("control records   {}", controls.len());
     for c in controls.iter().filter(|c| c.as_str() != "connected") {
