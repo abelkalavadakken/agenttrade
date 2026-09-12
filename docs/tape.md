@@ -32,3 +32,5 @@ event counts on exit. Exits non-zero if the feed client stops early.
 frames and prints record count, duration, gap count, checksum failures and
 control markers. `recorded` reads fast, `live` paces at recorded timing.
 Later sessions add state hashes to recorded mode.
+
+Tapes are gitignored. Record your own with `cargo run --bin record`.
