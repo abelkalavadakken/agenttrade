@@ -133,21 +133,20 @@ budget_num = equity.checked_mul(risk_per_trade_bps)      // price_scale * bps
 loss_num.checked_mul(10_000)  <=  budget_num
 ```
 
-Any `None` rejects. Worked example for BTC/USD, equity 100,000 USD
-(`1_000_000` at scale 1), 1% rule, price 77,362.8, stop 77,000.0,
-qty 0.5 BTC (`50_000_000`):
+Any `None` rejects. Worked example for BTC/USD, equity 100,000 USD (`1_000_000` at
+price_scale 1), 1% rule (budget 1,000 USD), price 77,362.8, stop 77,000.0,
+qty 0.5 BTC (`50_000_000` at qty_scale 8):
 
 ```
-risk_ticks = 773628 - 770000 = 3628
-loss_num   = 50_000_000 * 3628 = 181_400_000_000            (~1.8e11)
-budget_num = 1_000_000 * 100 * 100_000_000 = 1e16
-loss_num * 10_000 = 1.814e15 <= 1e16  -> allowed (loss 1,814 USD < 1,000 USD? no)
+risk_ticks        = 773628 - 770000            = 3628
+loss_num          = 50_000_000 * 3628          = 181_400_000_000   (~1.8e11)
+budget_num        = 1_000_000 * 100 * 1e8      = 1e16
+loss_num * 10_000 = 1.814e15  <=  1e16          -> allowed
 ```
 
-Note the check: 1.814e15 <= 1e16 is true, so allowed. Recompute the loss
-in USD: 0.5 BTC * 362.8 USD = 181.4 USD, under the 1,000 USD budget. The
-integers agree: `loss_num / 10^qty_scale = 1_814` at price_scale 1 =
-181.4 USD.
+Cross-check in USD: 0.5 BTC * 362.8 USD = 181.40 USD, under the 1,000 USD
+budget. In integers, `loss_num / 10^qty_scale = 1_814` at price_scale 1,
+which is 181.4 USD. The two agree.
 
 Overflow bounds: `qty * risk_ticks * 10_000` for a 1,000 BTC order
 (`1e11`) with a 10,000 USD stop distance (`1e5`) is `1e20`, past i64. That
