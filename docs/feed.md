@@ -4,7 +4,10 @@ One module per venue. Each venue splits into a pure tracker and a socket client.
 
 ## kraken
 
-WebSocket v2, `wss://ws.kraken.com/v2`, book channel, depth 10.
+WebSocket v2, `wss://ws.kraken.com/v2`, book channel at depth 10 and trade
+channel, both for one symbol. Trades carry no sequence and need no book;
+each trade frame becomes one `FeedEvent::Trade` per entry. Raw trade frames
+go on the tape under the same source id as book frames.
 
 **Tracker** (`kraken::Tracker`) is bytes in, events out, no clock, no socket.
 It parses frames to `BookEvent` and applies them to a `book::Book`, which
@@ -48,6 +51,7 @@ awake for a clean tape.
 
 ## Fixtures
 
-`tests/fixtures/kraken_book_btcusd.jsonl` is 8 s of live frames captured
-2026-09-12. Tests parse every line, verify every checksum, corrupt one
+`tests/fixtures/kraken_book_btcusd.jsonl` is 8 s of live book frames captured
+2026-09-12. `kraken_trade_btcusd.jsonl` is 30 s of live trade frames captured
+2026-09-14, 14 frames carrying 25 trades. Tests parse every line, verify every checksum, corrupt one
 checksum, replay a snapshot mid-stream as a synthetic gap, and feed garbage.

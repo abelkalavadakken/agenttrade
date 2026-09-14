@@ -2,15 +2,16 @@
 //! The book itself lives in crates/book; this module owns the venue protocol.
 
 use book::{ApplyError, Book};
-use types::{BookEvent, FeedEvent, Instrument, Level, ResyncReason};
+use types::{BookEvent, FeedEvent, Instrument, Level, ResyncReason, Side, TradeEvent};
 
-use super::wire::{BookFrame, Frame, WireLevel};
+use super::wire::{BookFrame, Frame, TradeFrame, WireLevel};
 use crate::time::parse_rfc3339_ns;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MsgKind {
     Snapshot,
     Update,
+    Trade,
     Heartbeat,
     Status,
     SubscribeAck,
@@ -33,6 +34,7 @@ pub struct Handled {
 pub struct TrackerStats {
     pub snapshots: u64,
     pub updates: u64,
+    pub trades: u64,
     pub heartbeats: u64,
     pub checksum_failures: u64,
     pub crossed: u64,
@@ -96,6 +98,7 @@ impl Tracker {
         };
         match (frame.channel, frame.method, frame.success) {
             (Some("book"), _, _) => self.on_book(text),
+            (Some("trade"), _, _) => self.on_trade(text),
             (Some("heartbeat"), _, _) => {
                 self.stats.heartbeats += 1;
                 Handled::kind(MsgKind::Heartbeat)
@@ -166,6 +169,40 @@ impl Tracker {
                     break;
                 }
             }
+        }
+        out
+    }
+
+    /// Trades carry no sequence and need no book; each frame is one or more events.
+    fn on_trade(&mut self, text: &str) -> Handled {
+        let Ok(frame) = serde_json::from_str::<TradeFrame>(text) else {
+            return self.unparsed();
+        };
+        let mut out = Handled::kind(MsgKind::Trade);
+        for t in &frame.data {
+            if t.symbol != self.instrument.symbol {
+                continue;
+            }
+            let side = match t.side {
+                "buy" => Side::Buy,
+                "sell" => Side::Sell,
+                _ => return self.unparsed(),
+            };
+            let (Some(price), Some(qty), Some(venue_time_ns)) = (
+                self.instrument.parse_price(t.price.as_str()),
+                self.instrument.parse_qty(t.qty.as_str()),
+                parse_rfc3339_ns(t.timestamp),
+            ) else {
+                return self.unparsed();
+            };
+            self.stats.trades += 1;
+            out.events.push(FeedEvent::Trade(TradeEvent {
+                side,
+                price,
+                qty,
+                venue_time_ns,
+                trade_id: t.trade_id,
+            }));
         }
         out
     }

@@ -39,6 +39,33 @@ pub struct WireLevel {
     pub qty: Number,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TradeFrame<'a> {
+    #[serde(borrow)]
+    pub data: Vec<TradeData<'a>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TradeData<'a> {
+    #[serde(borrow)]
+    pub symbol: &'a str,
+    #[serde(borrow)]
+    pub side: &'a str,
+    pub price: Number,
+    pub qty: Number,
+    pub trade_id: u64,
+    #[serde(borrow)]
+    pub timestamp: &'a str,
+}
+
+pub fn subscribe_trades(symbol: &str) -> String {
+    serde_json::json!({
+        "method": "subscribe",
+        "params": { "channel": "trade", "symbol": [symbol], "snapshot": false }
+    })
+    .to_string()
+}
+
 pub fn subscribe(symbol: &str, depth: u32) -> String {
     serde_json::json!({
         "method": "subscribe",
