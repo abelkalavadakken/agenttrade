@@ -29,9 +29,13 @@ the analyst a path instead of a point. The regime enum the analyst
 emits (`trend_up`, `trend_down`, `range`, `unclear`) is not decidable
 from a single bid and ask.
 
-**Window and cadence.** 1 minute bars, ring of 60. A bar closes on the
-minute boundary of event timestamps, never wall clock, so replay closes
-the same bars. The forming bar is exposed separately from closed bars.
+**Window and cadence.** 1 minute bars, ring of 512 closed bars (the
+observer reads 15; the ring is sized for the Kronos lookback below). A bar
+closes on the minute boundary of tape receive timestamps, never on message
+arrival and never on the machine clock, so replay closes the same bars.
+`advance(now_ns)` closes every bar whose boundary has passed, so a quiet
+minute still closes as a gap bar. The forming bar is exposed separately
+from closed bars.
 
 **Input.** Trades: open, high, low, close from trade prices, volume from
 trade quantity. Book-only degraded form: open, high, low, close from
@@ -146,3 +150,8 @@ Each of these lacks an agent use I can state in one sentence today.
   emits it. The analyst names the regime today. Automating it is a
   separate note once we have tapes showing what the analyst calls.
 - Anything cross-venue. One venue.
+- Kronos forecast input. A foundation model over K-line bars that wants a
+  512-bar lookback of OHLCV. The bar ring is already 512 deep and `Bar`
+  carries what it needs; what is missing is the consumer, a model runtime,
+  and a note on how a forecast reaches an agent without becoming a signal
+  the risk gate never saw.
