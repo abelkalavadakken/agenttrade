@@ -29,3 +29,14 @@ release build, median of 5 runs.
 | 9eeff0e | Apple M2, 16 GB, macOS 26.6.2, rustc 1.98.1 | 4,491 | 0 | 0 | 416 ns | 625 ns |
 
 p99 varied between 584 ns and 834 ns across the 5 runs. p50 did not move.
+
+### Paper venue demo, Kraken BTC/USD
+
+`cargo run --release -p exec --example paper_demo -- tapes/<file>.tape` replays a
+tape through feed, book, risk gate and paper venue with six scripted intents.
+
+| commit | tape | intents | fills | realized P&L | note |
+|---|---|---|---|---|---|
+| 54d9666 | 600 s, 2026-09-12, 4,491 book events | 3 approved, 3 rejected | 3 | -1.4 USD on 0.1 BTC round trip | paper venue, no fees, no queue position, optimistic |
+
+The three rejections are MissingStop, PriceOutOfBand and ExceedsSingleLossLimit.
