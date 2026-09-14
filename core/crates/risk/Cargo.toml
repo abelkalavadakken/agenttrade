@@ -1,0 +1,13 @@
+[package]
+name = "risk"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+types = { path = "../types" }
+book = { path = "../book" }
+
+[dev-dependencies]
+proptest.workspace = true
+crc32fast.workspace = true
