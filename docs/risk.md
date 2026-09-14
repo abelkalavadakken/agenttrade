@@ -126,44 +126,44 @@ full must not exceed `risk_per_trade_bps` of equity.
 
 Units: `qty` is at `qty_scale` (1e8 for BTC), prices at `price_scale`.
 The loss in quote units at price_scale is `qty * |price - stop| / 10^qty_scale`.
-To avoid the division and its rounding, compare cross-multiplied:
+Divide once, rounding up so the loss never slips under, then compare in bps:
 
 ```
-risk_ticks = |price - stop|                              // price units
-loss_num   = qty.checked_mul(risk_ticks)                 // qty_scale * price_scale
-budget_num = equity.checked_mul(risk_per_trade_bps)      // price_scale * bps
-             .checked_mul(10^qty_scale)                  // qty_scale * price_scale * bps
-loss_num.checked_mul(10_000)  <=  budget_num
+risk_ticks = |price - stop|                                  // price units
+loss       = ceil(qty.checked_mul(risk_ticks) / 10^qty_scale) // price units
+loss.checked_mul(10_000)  <=  equity.checked_mul(risk_per_trade_bps)
 ```
 
-Any `None` rejects. Worked example for BTC/USD, equity 100,000 USD (`1_000_000` at
-price_scale 1), 1% rule (budget 1,000 USD), price 77,362.8, stop 77,000.0,
-qty 0.5 BTC (`50_000_000` at qty_scale 8):
+Any `None` rejects. Worked example for BTC/USD, equity 100,000 USD
+(`1_000_000` at price_scale 1), 1% rule (budget 1,000 USD), price 77,362.8,
+stop 77,000.0, qty 0.5 BTC (`50_000_000` at qty_scale 8):
 
 ```
-risk_ticks        = 773628 - 770000            = 3628
-loss_num          = 50_000_000 * 3628          = 181_400_000_000   (~1.8e11)
-budget_num        = 1_000_000 * 100 * 1e8      = 1e16
-loss_num * 10_000 = 1.814e15  <=  1e16          -> allowed
+risk_ticks   = 773628 - 770000               = 3628
+qty * ticks  = 50_000_000 * 3628             = 181_400_000_000
+loss         = ceil(181_400_000_000 / 1e8)   = 1_814        (181.4 USD)
+loss * 1e4   = 18_140_000  <=  1_000_000 * 100 = 100_000_000  -> allowed
 ```
 
 Cross-check in USD: 0.5 BTC * 362.8 USD = 181.40 USD, under the 1,000 USD
-budget. In integers, `loss_num / 10^qty_scale = 1_814` at price_scale 1,
-which is 181.4 USD. The two agree.
+budget.
 
-Overflow bounds: `qty * risk_ticks * 10_000` for a 1,000 BTC order
-(`1e11`) with a 10,000 USD stop distance (`1e5`) is `1e20`, past i64. That
-rejects with `EXCEEDS_SINGLE_LOSS_LIMIT` and a reason of "overflow", which
-is the right answer for an order that size. Normal orders stay under 1e17.
+Overflow bounds: the only product that can overflow for a sane account is
+`qty * risk_ticks`, at 1,000 BTC (`1e11`) with a 10,000 USD stop distance
+(`1e5`) it is `1e16`, still inside i64. The bps comparison sits at
+`equity * 10_000`, which overflows only past 9e14 quote units, or 92
+trillion USD at scale 1. Overflow rejects with `EXCEEDS_SINGLE_LOSS_LIMIT`
+and a reason of "overflow". An earlier draft cross-multiplied both sides by
+`10^qty_scale` and overflowed at 100k USD equity times 10x leverage; that is
+why the division is here.
 
 **`EXCEEDS_MAX_LEVERAGE`.** Notional after the fill must not exceed
 `max_leverage_bps` of equity.
 
 ```
-new_net    = position.net_qty + signed(qty)               // signed by side
-notional   = |new_net|.checked_mul(price)                 // qty_scale * price_scale
-limit      = equity.checked_mul(max_leverage_bps).checked_mul(10^qty_scale)
-notional.checked_mul(10_000) <= limit
+new_net    = position.net_qty + signed(qty)                    // signed by side
+notional   = ceil(|new_net|.checked_mul(price) / 10^qty_scale) // price units
+notional.checked_mul(10_000) <= equity.checked_mul(max_leverage_bps)
 ```
 
 `Flatten` skips sizing and leverage: it only reduces. `Cancel` and `Noop`
