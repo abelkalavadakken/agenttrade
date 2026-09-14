@@ -53,5 +53,5 @@ awake for a clean tape.
 
 `tests/fixtures/kraken_book_btcusd.jsonl` is 8 s of live book frames captured
 2026-09-12. `kraken_trade_btcusd.jsonl` is 30 s of live trade frames captured
-2026-09-14, 14 frames carrying 25 trades. Tests parse every line, verify every checksum, corrupt one
+2026-09-14, 14 frames carrying 42 trades. Tests parse every line, verify every checksum, corrupt one
 checksum, replay a snapshot mid-stream as a synthetic gap, and feed garbage.
