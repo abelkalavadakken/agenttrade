@@ -1,0 +1,16 @@
+[package]
+name = "exec"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+types = { path = "../types" }
+book = { path = "../book" }
+thiserror.workspace = true
+
+[dev-dependencies]
+feed = { path = "../feed" }
+risk = { path = "../risk" }
+tape = { path = "../tape" }
+crc32fast.workspace = true
