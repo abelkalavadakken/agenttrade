@@ -124,6 +124,15 @@ pub struct IntentEnvelope {
     pub intent: Intent,
 }
 
+/// Net position for one instrument. Owned by crates/exec, read by risk and api.
+/// `net_qty` positive is long. `realized_pnl` is in quote units at price_scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Position {
+    pub net_qty: Qty,
+    pub average_entry_price: Price,
+    pub realized_pnl: i64,
+}
+
 /// Numbering matches proto RejectionCode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RejectionCode {
