@@ -91,10 +91,12 @@ front. That is optimistic and is stated in README next to any P&L number.
 
 **Stops.** A `Place` carries a stop. The paper venue registers a stop order
 that triggers when the touch reaches the stop price (bid for a long's stop,
-ask for a short's) and then fills as a market order against the book, full
-depth, walking levels until done. If the depth-10 book cannot absorb it the
-remainder fills at the last level's price and the event is flagged
-`thin_book`. Stops for a position are cancelled when the position is flat.
+ask for a short's) and then fills as a market order against the displayed
+book, walking every level. If the displayed depth cannot absorb it, the
+remainder rests as a marketable order and fills on the next book update,
+again against displayed depth, until done. Every fill event from a stop
+whose first pass could not complete carries `thin_book = true`. Stops for a
+position are cancelled when the position is flat.
 
 **Rejects.** The paper venue rejects nothing; the risk gate already did.
 `Rejected` exists for real venue adapters.
@@ -104,6 +106,9 @@ remainder fills at the last level's price and the event is flagged
 ```rust
 pub struct Position { pub net_qty: Qty, pub average_entry_price: Price, pub realized_pnl: i64 }
 ```
+
+`realized_pnl` is new on the proto `Position` too (field 4), in its own
+proto PR together with `INSTRUMENT_HALTED = 11`.
 
 `net_qty` positive is long. Prices are at price_scale, qty at qty_scale.
 Quote amounts (pnl, equity) are at price_scale. The product
@@ -151,11 +156,10 @@ recorded mode asserts these against the tape.
 - Determinism: replay the 600 s tape twice with a scripted intent sequence
   and assert identical fill lists and final position.
 
-## Open decisions
+## Decisions, 2026-09-14
 
-1. Stop fills walk full displayed depth and flag `thin_book` when the depth
-   runs out, versus resting the remainder. Proposed: walk and flag.
-2. Queue position not modelled. Proposed: accept for the paper venue, state it
-   next to every P&L number.
-3. `Position` grows a `realized_pnl` field. The proto `Position` has
-   `unrealized_pnl` only; realized would be a proto change in its own PR.
+- Stop fills walk full displayed depth; the unfilled remainder rests as
+  marketable and fills on the next book update; fill events carry
+  `thin_book`.
+- Queue position is not modelled. Every P&L number in README says so.
+- `Position` gains `realized_pnl`, proto change in its own PR.

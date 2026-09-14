@@ -13,6 +13,7 @@ pub struct RiskInputs<'a> {
     pub book: &'a Book,                 // best_bid, best_ask, mid, is_stale
     pub book_sequence_id: u64,          // core sequence at the last applied event
     pub venue_connected: bool,          // feed client has a live session
+    pub instrument_halted: bool,        // venue status frame says not online
     pub position: Position,             // net_qty, average_entry_price (types)
     pub equity: i64,                    // quote units at price_scale
     pub peak_equity: i64,               // high-water mark, same scale
@@ -66,19 +67,20 @@ Runs first because nothing else matters if it is set.
 Once tripped the flag stays set until an operator clears it. Risk does not
 clear it.
 
-### 1. Instrument and market state, `VENUE_DISCONNECTED`
+### 1. Instrument and market state, `VENUE_DISCONNECTED` / `INSTRUMENT_HALTED`
 
 - `instrument` found in `instruments::find(venue, symbol)`; otherwise
   `INVALID_INTENT`.
-- `venue_connected == true`.
-- `book.is_stale() == false`. Stale covers checksum failure, crossed,
-  silence and disconnect (docs/book.md).
-- `book.best_bid()` and `book.best_ask()` both present.
-
-The doc also names "halted". Kraken v2 status frames carry `system:
-"online" | "maintenance" | "cancel_only" | "post_only"`. Anything but
-`online` sets `venue_connected = false` in the feed client. That is the
-halt signal for this session; a dedicated code can come later.
+- `venue_connected == true`, else `VENUE_DISCONNECTED`.
+- `book.is_stale() == false`, else `VENUE_DISCONNECTED`. Stale covers
+  checksum failure, crossed, silence and disconnect (docs/book.md).
+- `book.best_bid()` and `book.best_ask()` both present, else
+  `VENUE_DISCONNECTED`.
+- `instrument_halted == false`, else `INSTRUMENT_HALTED`. The feed client
+  sets it from Kraken's status frame: `system` anything but `online`
+  (`maintenance`, `cancel_only`, `post_only`) halts new placements. A halt
+  is a venue fact, not a connectivity fact, so it gets its own code on the
+  tape.
 
 ### 2. Staleness, `STALE_STATE`
 
@@ -114,9 +116,10 @@ string names the side.
 
 ### 4. Stop and sizing
 
-**`MISSING_STOP`.** `Place` with `stop == 0`. Also: stop on the wrong side of
+**`MISSING_STOP`.** `Place` with `stop == 0`. A stop on the wrong side of
 the price (`Buy` with `stop >= price`, `Sell` with `stop <= price`) rejects
 with `INVALID_INTENT`, because a stop that cannot trigger is not a stop.
+Decided 2026-09-14.
 
 **`EXCEEDS_SINGLE_LOSS_LIMIT`, the 1% rule.** The loss if the stop fills in
 full must not exceed `risk_per_trade_bps` of equity.
