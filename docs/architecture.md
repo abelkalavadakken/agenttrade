@@ -122,6 +122,7 @@ enum RejectionCode {
   MISSING_STOP = 8;
   PRICE_OUT_OF_BAND = 9;
   INVALID_INTENT = 10;
+  INSTRUMENT_HALTED = 11;
 }
 
 // ---------------- RPC Payloads ----------------
@@ -140,6 +141,7 @@ message Position {
   int64 net_qty = 1; // Positive = Long, Negative = Short, 0 = Flat
   int64 average_entry_price = 2;
   int64 unrealized_pnl = 3;
+  int64 realized_pnl = 4;
 }
 
 message MarketFeatures {

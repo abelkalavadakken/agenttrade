@@ -138,4 +138,5 @@ pub enum RejectionCode {
     MissingStop = 8,
     PriceOutOfBand = 9,
     InvalidIntent = 10,
+    InstrumentHalted = 11,
 }
