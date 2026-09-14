@@ -362,6 +362,8 @@ dependencies = [
  "book",
  "crc32fast",
  "feed",
+ "risk",
+ "tape",
  "thiserror",
  "types",
 ]

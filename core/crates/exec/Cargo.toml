@@ -11,4 +11,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 feed = { path = "../feed" }
+risk = { path = "../risk" }
+tape = { path = "../tape" }
 crc32fast.workspace = true
