@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("duration          {:.3} s", duration_ns as f64 / 1e9);
     println!("snapshots         {}", stats.snapshots);
     println!("updates           {}", stats.updates);
+    println!("trades            {}", stats.trades);
     println!("heartbeats        {}", stats.heartbeats);
     println!("unparsed          {}", stats.unparsed);
     println!("unsolicited snaps {}", stats.unsolicited_snapshots);
