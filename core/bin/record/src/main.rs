@@ -56,7 +56,9 @@ impl Counts {
                 FeedEvent::Book(types::BookEvent::Snapshot { .. }) => self.snapshots += 1,
                 FeedEvent::Book(types::BookEvent::Delta { .. }) => self.deltas += 1,
                 FeedEvent::Trade(_) => self.trades += 1,
-                FeedEvent::Resync(ResyncReason::ChecksumMismatch) => self.resync_checksum += 1,
+                FeedEvent::Resync(ResyncReason::ChecksumMismatch | ResyncReason::Crossed) => {
+                    self.resync_checksum += 1
+                }
                 FeedEvent::Resync(ResyncReason::UnsolicitedSnapshot) => {
                     self.resync_unsolicited += 1
                 }

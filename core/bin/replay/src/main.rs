@@ -122,7 +122,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("updates           {}", stats.updates);
     println!("heartbeats        {}", stats.heartbeats);
     println!("unparsed          {}", stats.unparsed);
-    println!("gap count         {}", stats.gaps);
+    println!("unsolicited snaps {}", stats.unsolicited_snapshots);
+    println!("tracker crossed   {}", stats.crossed);
     println!("checksum failures {}", stats.checksum_failures);
     println!(
         "resync silent     {}",
@@ -158,7 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn resync_index(r: ResyncReason) -> usize {
     match r {
-        ResyncReason::ChecksumMismatch => 0,
+        ResyncReason::ChecksumMismatch | ResyncReason::Crossed => 0,
         ResyncReason::UnsolicitedSnapshot => 1,
         ResyncReason::Silent => 2,
         ResyncReason::Disconnected => 3,
