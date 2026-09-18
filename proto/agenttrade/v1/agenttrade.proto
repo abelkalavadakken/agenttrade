@@ -82,11 +82,26 @@ message Position {
   int64 realized_pnl = 4;
 }
 
+message Bar {
+  int64 open = 1;
+  int64 high = 2;
+  int64 low = 3;
+  int64 close = 4;
+  int64 volume = 5;
+  int64 close_ns = 6;
+  bool gap = 7;
+}
+
 message MarketFeatures {
   double rsi = 1; 
   double ema_fast = 2;
   double ema_slow = 3;
   int64 order_flow_imbalance = 4;
+  repeated Bar bars = 5;          // closed, oldest first, up to 15
+  Bar forming = 6;
+  uint32 bars_since_update = 7;   // 0 when fresh
+  bool volume_available = 8;
+  bool book_stale = 9;
 }
 
 message GetStateResponse {
@@ -114,6 +129,7 @@ message SubmitIntentRequest {
   int64 target_price = 10;
   int64 stop_loss = 11; // Mandatory for PLACE intents
   int64 quantity = 12;
+  uint64 target_order_id = 13; // CANCEL only: the order to cancel
 }
 
 message SubmitIntentResponse {
@@ -134,6 +150,55 @@ message RegimeShiftPayload {
   string previous_regime = 1;
   string new_regime = 2;
   double confidence = 3;
+}
+
+// ---------------- Tape records (crates/api writes, bin/replay reads) ----------------
+enum OrderState {
+  ORDER_STATE_UNSPECIFIED = 0;
+  ORDER_PENDING_NEW = 1;
+  ORDER_OPEN = 2;
+  ORDER_PARTIALLY_FILLED = 3;
+  ORDER_FILLED = 4;
+  ORDER_PENDING_CANCEL = 5;
+  ORDER_CANCELED = 6;
+  ORDER_REJECTED = 7;
+}
+
+message OrderTransition {
+  uint64 order_id = 1;
+  OrderState from = 2;
+  OrderState to = 3;
+  string reason = 4;
+  int64 ns = 5;
+}
+
+message Fill {
+  uint64 order_id = 1;
+  OrderSide side = 2;
+  int64 price = 3;
+  int64 qty = 4;
+  bool thin_book = 5;
+  int64 ns = 6;
+}
+
+message PositionUpdate {
+  Position position = 1;
+  int64 equity = 2;
+  int64 ns = 3;
+}
+
+message ExecEvent {
+  oneof event {
+    OrderTransition transition = 1;
+    Fill fill = 2;
+    PositionUpdate position = 3;
+  }
+}
+
+message StateHash {
+  uint64 sequence_id = 1;
+  uint64 event_count = 2;
+  bytes hash = 3;
 }
 
 message MarketEvent {
