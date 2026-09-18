@@ -13,6 +13,8 @@ pub struct MrOfi {
     entered_ns: Option<i64>,
     entry_ofi_sign: i64,
     cooldown_until_ns: i64,
+    /// A flatten is in flight; wait for the position to clear before acting again.
+    exiting: bool,
 }
 
 impl Default for MrOfi {
@@ -65,6 +67,7 @@ impl MrOfi {
             entered_ns: None,
             entry_ofi_sign: 0,
             cooldown_until_ns: 0,
+            exiting: false,
         }
     }
 
@@ -161,5 +164,6 @@ impl Strategy for MrOfi {
         self.entered_ns = None;
         self.entry_ofi_sign = 0;
         self.cooldown_until_ns = 0;
+        self.exiting = false;
     }
 }

@@ -854,6 +854,13 @@ impl CoreHandle {
     pub fn sender(&self) -> SyncSender<CoreInput> {
         self.tx.clone()
     }
+
+    /// Drops this handle's sender and waits for the loop to flush and exit.
+    /// Every other sender clone must already be gone.
+    pub fn shutdown(self) -> CoreStats {
+        drop(self.tx);
+        self.join.join().expect("core thread")
+    }
 }
 
 /// Starts the loop on its own OS thread. Dropping every sender ends it; the

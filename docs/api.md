@@ -79,7 +79,14 @@ The tape gains sources. Format unchanged; the header table grows.
 | 2 | `core.intent` | `SubmitIntentRequest`, prost-encoded |
 | 3 | `core.verdict` | `SubmitIntentResponse`, prost-encoded |
 | 4 | `core.exec` | one `ExecEvent`, prost-encoded (new proto message, see 6) |
-| 5 | `core.hash` | `StateHash { sequence_id, hash: bytes }`, prost-encoded |
+| 5 | `core.hash` | `StateHash { sequence_id, event_count, hash }`, prost-encoded |
+| 6 | `core.strategy` | strategy-originated `SubmitIntentRequest`, prost-encoded, with the effective multiplier appended to `intent_id` as `@m<bps>`; and `expired <strategy> <setup>` text markers |
+| 7 | `core.wake` | every `Wake`, prost-encoded |
+
+Ticks are recorded too, as `tick` under `record.ctl`, so bar closes, timer
+wakes and drained acks land at the same tape positions on replay. Replay
+ignores sources 6 and 7: the runner regenerates strategy intents and wakes
+from the same inputs, and the hash proves it did.
 
 Order on the tape for one intent: intent, verdict, then each exec event
 it caused, then the hash. Order for one venue frame: raw frame, then any
@@ -193,6 +200,18 @@ docs/types.md.
 - The `MarketFeatures` and `Bar` change from docs/features.md.
 
 Python codegen from the same proto lands with the agents work, not here.
+
+## 6b. The entrypoint
+
+`bin/agenttrade` is the one process: the Kraken feed client and the gRPC
+server on tokio, the core on its own thread, a 1 s tick task, and a tape
+in `--out`. `--enable <id>` and `--tune <id>.<param>=<value>` are applied
+as ALLOCATE and TUNE intents through the gate once the first verified
+snapshot has arrived, so the tape shows them and replay reproduces them.
+`--seconds N` stops after N seconds; otherwise Ctrl-C. Shutdown prints the
+tape path, record count, core events and final hash.
+
+`crates/api/examples/submit.rs` is a minimal client for one intent.
 
 ## 7. Latency, allocation
 

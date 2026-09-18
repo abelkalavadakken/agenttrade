@@ -1,7 +1,7 @@
 //! Fills attribute to strategy_id; take-profit exits; flatten per strategy and all.
 
 use book::Book;
-use exec::{CancelReason, ExecEvent, OrderKind, PaperConfig, PaperVenue};
+use exec::{CancelReason, ExecError, ExecEvent, OrderKind, PaperConfig, PaperVenue};
 use types::{BookEvent, Intent, IntentEnvelope, Level, OrderState, Price, Qty, Side, TimeInForce};
 
 const ACK: i64 = 1_000;
@@ -283,4 +283,37 @@ fn open_orders_of_counts_one_strategy() {
     assert_eq!(v.open_orders_of("a"), 2);
     assert_eq!(v.open_orders_of("b"), 1);
     assert_eq!(v.open_orders(), 3);
+}
+
+#[test]
+fn overlapping_flattens_do_not_flip_the_position() {
+    let mut v = venue();
+    let b = book_at(100, 101);
+    let mut out = Vec::new();
+    v.submit(
+        &env("a", place(Side::Buy, 101, 90, 0, 100_000_000)),
+        &b,
+        0,
+        &mut out,
+    )
+    .unwrap();
+    v.on_book(&b, ACK, &mut out);
+    assert_eq!(v.strategy_position("a").net_qty, Qty(100_000_000));
+    // Three flattens before the first one acks: one IOC, two "nothing to flatten".
+    let first = v.submit(&env("a", Intent::Flatten), &b, 2_000, &mut out);
+    assert!(first.is_ok());
+    assert_eq!(
+        v.submit(&env("a", Intent::Flatten), &b, 2_001, &mut out),
+        Err(ExecError::Flat)
+    );
+    assert_eq!(
+        v.submit(&env("a", Intent::Flatten), &b, 2_002, &mut out),
+        Err(ExecError::Flat)
+    );
+    v.on_book(&b, 2_000 + ACK, &mut out);
+    assert!(
+        v.strategy_position("a").net_qty.is_zero(),
+        "flat, not flipped"
+    );
+    assert_eq!(v.orders().filter(|o| o.tif == TimeInForce::Ioc).count(), 1);
 }

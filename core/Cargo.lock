@@ -3,6 +3,21 @@
 version = 4
 
 [[package]]
+name = "agenttrade"
+version = "0.1.0"
+dependencies = [
+ "api",
+ "clap",
+ "feed",
+ "tape",
+ "tokio",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "types",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -269,3 +269,28 @@ fn breakout_without_volume_stays_forming_and_symmetric_below() {
     assert_eq!(order.stop, Price(1008 + 200));
     assert!(order.reason.contains("volume unavailable"));
 }
+
+#[test]
+fn mr_ofi_sends_one_flatten_and_waits_for_the_exit() {
+    let mut s = MrOfi::new();
+    let b = book(1000, 1003);
+    let f = snapshot(&[], -300_000_000, true);
+    assert!(matches!(
+        s.on_event(&state(0, 1, &b, &f, 0)),
+        Some(Action::Place(_))
+    ));
+    let flip = snapshot(&[], 50_000_000, true);
+    assert!(matches!(
+        s.on_event(&state(1, 2, &b, &flip, 1_000_000)),
+        Some(Action::Flatten { .. })
+    ));
+    // Still in position while the IOC is in flight: silence.
+    assert!(s.on_event(&state(2, 3, &b, &flip, 1_000_000)).is_none());
+    assert!(s.on_event(&state(3, 4, &b, &flip, 1_000_000)).is_none());
+    // Flat again: the exit is done; cooldown applies to the next entry.
+    assert!(s.on_event(&state(4, 5, &b, &f, 0)).is_none(), "in cooldown");
+    assert!(matches!(
+        s.on_event(&state(61_000_000_000, 6, &b, &f, 0)),
+        Some(Action::Place(_))
+    ));
+}

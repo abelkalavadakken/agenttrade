@@ -14,7 +14,7 @@ pub trait Strategy {
     fn horizon(&self) -> Horizon;                 // decides the mode, see 3
     fn params(&self) -> &[Param];                 // name, value, hard min, hard max
     fn set_param(&mut self, name: &str, value: i64) -> Result<(), ParamError>;
-    fn on_event(&mut self, state: &State) -> Option<Order>;
+    fn on_event(&mut self, state: &State) -> Option<Action>;   // Place(Order) or Flatten
     fn setup_state(&self) -> SetupState;
     fn on_fill(&mut self, fill: &Fill);           // its own fills only
     fn reset(&mut self);                          // after disable, before enable
@@ -42,6 +42,10 @@ pub struct Order {
     pub tif: TimeInForce,
     pub reason: &'static str,    // one line, goes on the tape and into the Wake
 }
+
+/// Exits go through the strategy's own Flatten so they never need a stop
+/// and never race the protection exec already holds.
+pub enum Action { Place(Order), Flatten { reason: &'static str } }
 
 pub enum SetupState {
     None,
