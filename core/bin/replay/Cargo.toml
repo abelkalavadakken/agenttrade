@@ -8,5 +8,7 @@ license.workspace = true
 types = { path = "../../crates/types" }
 feed = { path = "../../crates/feed" }
 book = { path = "../../crates/book" }
+api = { path = "../../crates/api" }
+prost.workspace = true
 tape = { path = "../../crates/tape" }
 clap.workspace = true

@@ -63,6 +63,62 @@ impl PaperVenue {
         &self.account
     }
 
+    /// Feeds every byte of execution state that replay must reproduce to
+    /// `sink`, fixed little-endian layout. Terminal orders are skipped: they
+    /// no longer influence anything.
+    pub fn hash_into(&self, sink: &mut dyn FnMut(&[u8])) {
+        let mut w = |v: i64| sink(&v.to_le_bytes());
+        for o in self.orders.values().filter(|o| !o.is_terminal()) {
+            w(o.id as i64);
+            w(match o.kind {
+                OrderKind::Limit => 0,
+                OrderKind::Stop { parent } => parent as i64 + 1,
+            });
+            w(o.side as i64);
+            w(o.price.0);
+            w(o.qty.0);
+            w(o.filled.0);
+            w(o.pending_fill.0);
+            w(o.state as i64);
+            w(o.thin_book as i64);
+        }
+        w(-1);
+        let mut queued: Vec<&Scheduled> = self.queue.iter().collect();
+        queued.sort();
+        for Reverse((due, slot, _)) in queued {
+            w(*due);
+            match &self.actions[slot] {
+                Action::Ack(id) => {
+                    w(1);
+                    w(*id as i64);
+                }
+                Action::Cancel(id) => {
+                    w(2);
+                    w(*id as i64);
+                }
+                Action::Fill {
+                    order_id,
+                    price,
+                    qty,
+                    thin_book,
+                } => {
+                    w(3);
+                    w(*order_id as i64);
+                    w(price.0);
+                    w(qty.0);
+                    w(*thin_book as i64);
+                }
+            }
+        }
+        w(-2);
+        let a = &self.account;
+        w(a.position.net_qty.0);
+        w(a.position.average_entry_price.0);
+        w(a.position.realized_pnl);
+        w(a.peak_equity);
+        w(self.next_order_id as i64);
+    }
+
     pub fn order(&self, id: u64) -> Option<&Order> {
         self.orders.get(&id)
     }

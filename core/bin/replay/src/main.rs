@@ -7,7 +7,10 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use api::{Core, CoreConfig, CoreInput, SOURCES};
 use book::{ApplyError, Book};
+use feed::FeedMsg;
+use prost::Message;
 
 use clap::{Parser, ValueEnum};
 use feed::kraken::Tracker;
@@ -155,7 +158,106 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("tape error        {e}");
         std::process::exit(2);
     }
+    if matches!(args.mode, ReplayMode::Recorded) {
+        let v = verify_hashes(&args)?;
+        println!("core events       {}", v.events);
+        println!("intents replayed  {}", v.intents);
+        println!("hashes verified   {}", v.verified);
+        println!("hash mismatches   {}", v.mismatches);
+        println!("final hash        {}", v.final_hash);
+        if v.mismatches > 0 {
+            std::process::exit(2);
+        }
+    }
     Ok(())
+}
+
+struct Verified {
+    events: u64,
+    intents: u64,
+    verified: u64,
+    mismatches: u64,
+    final_hash: String,
+}
+
+/// Recorded mode: drive the same core the recorder ran, re-inject recorded
+/// intents at their tape positions, compare every StateHash record.
+fn verify_hashes(args: &Args) -> Result<Verified, Box<dyn std::error::Error>> {
+    let instrument = instruments::find(&args.venue, &args.symbol).ok_or("unknown instrument")?;
+    let mut cfg = CoreConfig::paper_defaults(instrument);
+    cfg.depth = args.depth;
+    let (mut core, _state, _events) = Core::new(cfg, std::io::sink(), Default::default())?;
+    let mut reader = Reader::new(File::open(&args.tape)?, Mode::Fast)?;
+    let id = |name: &str| {
+        reader
+            .sources()
+            .iter()
+            .position(|s| s == name)
+            .map(|i| i as u16)
+    };
+    let (ws, ctl, intent, hash) = (
+        id(SOURCES[0]),
+        id(SOURCES[1]),
+        id(SOURCES[2]),
+        id(SOURCES[5]),
+    );
+    let mut v = Verified {
+        events: 0,
+        intents: 0,
+        verified: 0,
+        mismatches: 0,
+        final_hash: String::new(),
+    };
+    let mut next_tick = None;
+    while let Some(rec) = reader.next_record()? {
+        let boundary = rec.recv_ns.div_euclid(1_000_000_000) * 1_000_000_000;
+        let tick = *next_tick.get_or_insert(boundary);
+        if boundary > tick {
+            for t in (tick..boundary).step_by(1_000_000_000) {
+                core.handle(CoreInput::Tick(t + 1_000_000_000))?;
+            }
+            next_tick = Some(boundary);
+        }
+        let src = Some(rec.source_id);
+        if src == ws {
+            core.handle(CoreInput::Feed(FeedMsg::Raw {
+                recv_ns: rec.recv_ns,
+                bytes: rec.bytes,
+            }))?;
+        } else if src == ctl {
+            core.handle(CoreInput::Feed(FeedMsg::Control {
+                recv_ns: rec.recv_ns,
+                text: String::from_utf8_lossy(&rec.bytes).into_owned(),
+            }))?;
+        } else if src == intent {
+            let request = api::v1::SubmitIntentRequest::decode(rec.bytes.as_slice())?;
+            v.intents += 1;
+            core.handle(CoreInput::Intent {
+                request,
+                now_ns: rec.recv_ns,
+                reply: None,
+            })?;
+        } else if src == hash {
+            let recorded = api::v1::StateHash::decode(rec.bytes.as_slice())?;
+            if recorded.hash.as_slice() == core.hasher().current() {
+                v.verified += 1;
+            } else {
+                v.mismatches += 1;
+                if v.mismatches <= 5 {
+                    println!(
+                        "hash mismatch     seq {} event {} (recorded seq {} event {})",
+                        core.sequence_id(),
+                        core.hasher().events(),
+                        recorded.sequence_id,
+                        recorded.event_count
+                    );
+                }
+            }
+        }
+    }
+    v.events = core.hasher().events();
+    v.final_hash = core.hasher().hex();
+    Ok(v)
 }
 
 fn resync_index(r: ResyncReason) -> usize {
