@@ -82,6 +82,7 @@ pub fn state_response(s: &StateSnapshot, venue: &str, symbol: &str) -> v1::GetSt
         current_position: Some(convert::position(s.position, s.unrealized_pnl)),
         features,
         available_equity: s.available_equity,
+        strategies: Vec::new(), // populated by crates/strategy
     }
 }
 
@@ -106,7 +107,7 @@ impl AgentCoreService for Service {
         let request = request.into_inner();
         let (reply_tx, reply_rx) = oneshot::channel();
         let input = CoreInput::Intent {
-            request,
+            request: Box::new(request),
             now_ns: now_ns(),
             reply: Some(reply_tx),
         };

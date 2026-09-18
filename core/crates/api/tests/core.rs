@@ -33,7 +33,7 @@ fn place(intent_id: &str, price: i64, stop: i64, qty: i64, seq: u64) -> v1::Subm
         target_price: price,
         stop_loss: stop,
         quantity: qty,
-        target_order_id: 0,
+        ..Default::default()
     }
 }
 
@@ -58,7 +58,7 @@ fn run(intent_after: Option<usize>, sink: Vec<u8>) -> (Vec<u8>, String, u64) {
             let ask = core.book().best_ask().unwrap().price.0;
             let seq = core.sequence_id();
             core.handle(CoreInput::Intent {
-                request: place("i1", ask, ask - 10_000, 1_000_000, seq),
+                request: Box::new(place("i1", ask, ask - 10_000, 1_000_000, seq)),
                 now_ns: ns,
                 reply: None,
             })
@@ -180,7 +180,9 @@ fn recorded_tape_replays_with_matching_hashes() {
                 .unwrap(),
             2 => core
                 .handle(CoreInput::Intent {
-                    request: v1::SubmitIntentRequest::decode(rec.bytes.as_slice()).unwrap(),
+                    request: Box::new(
+                        v1::SubmitIntentRequest::decode(rec.bytes.as_slice()).unwrap(),
+                    ),
                     now_ns: rec.recv_ns,
                     reply: None,
                 })

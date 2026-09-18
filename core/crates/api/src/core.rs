@@ -87,7 +87,7 @@ impl CoreConfig {
 pub enum CoreInput {
     Feed(FeedMsg),
     Intent {
-        request: v1::SubmitIntentRequest,
+        request: Box<v1::SubmitIntentRequest>,
         now_ns: i64,
         reply: Option<oneshot::Sender<v1::SubmitIntentResponse>>,
     },
@@ -348,7 +348,7 @@ impl<W: Write> Core<W> {
 
     fn intent(
         &mut self,
-        request: v1::SubmitIntentRequest,
+        request: Box<v1::SubmitIntentRequest>,
         now_ns: i64,
     ) -> Result<v1::SubmitIntentResponse, tape::Error> {
         self.encode_buf.clear();

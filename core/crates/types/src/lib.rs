@@ -148,4 +148,7 @@ pub enum RejectionCode {
     PriceOutOfBand = 9,
     InvalidIntent = 10,
     InstrumentHalted = 11,
+    ParamOutOfBounds = 12,
+    AllocationLimit = 13,
+    MissingExitPlan = 14,
 }
