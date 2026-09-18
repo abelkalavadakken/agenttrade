@@ -39,6 +39,7 @@ fn run() -> (Vec<ExecEvent>, u64) {
                 side: Side::Buy,
                 price: ask,
                 stop: Price(ask.0 - 10_000),
+                take_profit: Price::ZERO,
                 qty: Qty(1_000_000),
                 tif: TimeInForce::Gtc,
             };

@@ -17,16 +17,33 @@ pub enum OrderKind {
     Stop {
         parent: u64,
     },
+    /// Resting take-profit for `parent`, a plain limit on the opposite side.
+    Exit {
+        parent: u64,
+    },
+}
+
+impl OrderKind {
+    pub fn parent(self) -> Option<u64> {
+        match self {
+            OrderKind::Limit => None,
+            OrderKind::Stop { parent } | OrderKind::Exit { parent } => Some(parent),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Order {
     pub id: u64,
     pub intent_id: String,
+    /// `IntentEnvelope.agent_id`: a strategy id, or "discretionary".
+    pub strategy_id: String,
     pub kind: OrderKind,
     pub side: Side,
     pub price: Price,
     pub stop: Price,
+    /// Zero means none. Discretionary orders must carry one (docs/risk.md).
+    pub take_profit: Price,
     pub qty: Qty,
     pub filled: Qty,
     /// Fill qty scheduled but not yet applied, so a resting order is not

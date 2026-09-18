@@ -203,6 +203,7 @@ fn place(side: Side, price: impl Into<Px>, stop: i64, qty: i64) -> Intent {
         side,
         price: Price(price.into().0),
         stop: Price(stop),
+        take_profit: Price::ZERO,
         qty: Qty(qty),
         tif: TimeInForce::Gtc,
     }

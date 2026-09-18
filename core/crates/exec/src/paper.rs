@@ -5,9 +5,9 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
 use book::Book;
-use types::{Intent, IntentEnvelope, Level, OrderState, Price, Qty, Side, TimeInForce};
+use types::{Intent, IntentEnvelope, Level, OrderState, Position, Price, Qty, Side, TimeInForce};
 
-use crate::account::Account;
+use crate::account::{apply_fill, Account};
 use crate::order::{CancelReason, Order, OrderKind};
 use crate::{ExecError, ExecEvent};
 
@@ -36,31 +36,84 @@ type Scheduled = Reverse<(i64, u64, ActionSlot)>;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ActionSlot(u64);
 
+struct NewOrder<'a> {
+    intent_id: &'a str,
+    strategy_id: &'a str,
+    side: Side,
+    price: Price,
+    stop: Price,
+    take_profit: Price,
+    qty: Qty,
+    tif: TimeInForce,
+    kind: OrderKind,
+}
+
 pub struct PaperVenue {
     cfg: PaperConfig,
+    qty_unit: i128,
     orders: BTreeMap<u64, Order>,
     queue: BinaryHeap<Scheduled>,
     actions: BTreeMap<u64, Action>,
     next_order_id: u64,
     next_slot: u64,
     account: Account,
+    /// One position per `strategy_id`; fills attribute here and to the account.
+    strategies: BTreeMap<String, Position>,
 }
 
 impl PaperVenue {
     pub fn new(cfg: PaperConfig, starting_cash: i64, qty_scale: u32) -> Self {
         Self {
             cfg,
+            qty_unit: 10i128.pow(qty_scale),
             orders: BTreeMap::new(),
             queue: BinaryHeap::new(),
             actions: BTreeMap::new(),
             next_order_id: 1,
             next_slot: 0,
             account: Account::new(starting_cash, qty_scale),
+            strategies: BTreeMap::new(),
         }
     }
 
     pub fn account(&self) -> &Account {
         &self.account
+    }
+
+    /// Per-strategy positions, sorted by id.
+    pub fn strategies(&self) -> &BTreeMap<String, Position> {
+        &self.strategies
+    }
+
+    pub fn strategy_position(&self, strategy_id: &str) -> Position {
+        self.strategies
+            .get(strategy_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn order(&self, id: u64) -> Option<&Order> {
+        self.orders.get(&id)
+    }
+
+    pub fn orders(&self) -> impl Iterator<Item = &Order> {
+        self.orders.values()
+    }
+
+    pub fn open_orders(&self) -> usize {
+        self.orders
+            .values()
+            .filter(|o| o.kind == OrderKind::Limit && !o.is_terminal())
+            .count()
+    }
+
+    pub fn open_orders_of(&self, strategy_id: &str) -> usize {
+        self.orders
+            .values()
+            .filter(|o| {
+                o.kind == OrderKind::Limit && !o.is_terminal() && o.strategy_id == strategy_id
+            })
+            .count()
     }
 
     /// Feeds every byte of execution state that replay must reproduce to
@@ -70,17 +123,22 @@ impl PaperVenue {
         let mut w = |v: i64| sink(&v.to_le_bytes());
         for o in self.orders.values().filter(|o| !o.is_terminal()) {
             w(o.id as i64);
-            w(match o.kind {
-                OrderKind::Limit => 0,
-                OrderKind::Stop { parent } => parent as i64 + 1,
-            });
+            let (tag, parent) = match o.kind {
+                OrderKind::Limit => (0, 0),
+                OrderKind::Stop { parent } => (1, parent),
+                OrderKind::Exit { parent } => (2, parent),
+            };
+            w(tag);
+            w(parent as i64);
             w(o.side as i64);
             w(o.price.0);
+            w(o.take_profit.0);
             w(o.qty.0);
             w(o.filled.0);
             w(o.pending_fill.0);
             w(o.state as i64);
             w(o.thin_book as i64);
+            w(o.strategy_id.len() as i64);
         }
         w(-1);
         let mut queued: Vec<&Scheduled> = self.queue.iter().collect();
@@ -117,25 +175,18 @@ impl PaperVenue {
         w(a.position.realized_pnl);
         w(a.peak_equity);
         w(self.next_order_id as i64);
-    }
-
-    pub fn order(&self, id: u64) -> Option<&Order> {
-        self.orders.get(&id)
-    }
-
-    pub fn orders(&self) -> impl Iterator<Item = &Order> {
-        self.orders.values()
-    }
-
-    pub fn open_orders(&self) -> usize {
-        self.orders
-            .values()
-            .filter(|o| o.kind == OrderKind::Limit && !o.is_terminal())
-            .count()
+        for (id, p) in &self.strategies {
+            sink(id.as_bytes());
+            let mut w = |v: i64| sink(&v.to_le_bytes());
+            w(p.net_qty.0);
+            w(p.average_entry_price.0);
+            w(p.realized_pnl);
+        }
     }
 
     /// Accepts an already risk-approved intent. Returns the new order id for
-    /// Place and Flatten, the target id for Cancel, 0 for Noop.
+    /// Place and Flatten, the target id for Cancel, 0 otherwise. The
+    /// strategy verbs (Allocate, Tune, setups) are not exec's; they return 0.
     pub fn submit(
         &mut self,
         env: &IntentEnvelope,
@@ -143,59 +194,61 @@ impl PaperVenue {
         now_ns: i64,
         out: &mut Vec<ExecEvent>,
     ) -> Result<u64, ExecError> {
-        match env.intent {
+        match &env.intent {
             Intent::Place {
                 side,
                 price,
                 stop,
+                take_profit,
                 qty,
                 tif,
             } => Ok(self.place(
-                &env.intent_id,
-                side,
-                price,
-                stop,
-                qty,
-                tif,
-                OrderKind::Limit,
+                NewOrder {
+                    intent_id: &env.intent_id,
+                    strategy_id: &env.agent_id,
+                    side: *side,
+                    price: *price,
+                    stop: *stop,
+                    take_profit: *take_profit,
+                    qty: *qty,
+                    tif: *tif,
+                    kind: OrderKind::Limit,
+                },
                 now_ns,
             )),
             Intent::Cancel { order_id } => {
-                self.request_cancel(order_id, CancelReason::Requested, now_ns, out)?;
-                Ok(order_id)
+                self.request_cancel(*order_id, CancelReason::Requested, now_ns, out)?;
+                Ok(*order_id)
             }
-            Intent::Flatten => self.flatten(&env.intent_id, book, now_ns, out),
-            Intent::Noop => Ok(0),
+            Intent::Flatten => {
+                self.flatten_strategy(&env.intent_id, &env.agent_id, book, now_ns, out)
+            }
+            Intent::FlattenAll => {
+                self.flatten_all(&env.intent_id, book, now_ns, out)?;
+                Ok(0)
+            }
+            _ => Ok(0),
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn place(
-        &mut self,
-        intent_id: &str,
-        side: Side,
-        price: Price,
-        stop: Price,
-        qty: Qty,
-        tif: TimeInForce,
-        kind: OrderKind,
-        now_ns: i64,
-    ) -> u64 {
+    fn place(&mut self, n: NewOrder, now_ns: i64) -> u64 {
         let id = self.next_order_id;
         self.next_order_id += 1;
         self.orders.insert(
             id,
             Order {
                 id,
-                intent_id: intent_id.to_string(),
-                kind,
-                side,
-                price,
-                stop,
-                qty,
+                intent_id: n.intent_id.to_string(),
+                strategy_id: n.strategy_id.to_string(),
+                kind: n.kind,
+                side: n.side,
+                price: n.price,
+                stop: n.stop,
+                take_profit: n.take_profit,
+                qty: n.qty,
                 filled: Qty::ZERO,
                 pending_fill: Qty::ZERO,
-                tif,
+                tif: n.tif,
                 state: OrderState::PendingNew,
                 reason: None,
                 thin_book: false,
@@ -203,7 +256,8 @@ impl PaperVenue {
                 updated_ns: now_ns,
             },
         );
-        if kind == OrderKind::Limit {
+        // Stops arm on their trigger; limits and exits go through the venue ack.
+        if !matches!(n.kind, OrderKind::Stop { .. }) {
             self.schedule(now_ns + self.cfg.ack_latency_ns, Action::Ack(id));
         }
         id
@@ -237,26 +291,39 @@ impl PaperVenue {
         Ok(())
     }
 
-    /// Cancels every open limit order, then sends an IOC for the whole
-    /// position at the worst displayed level so it walks the depth.
-    fn flatten(
+    fn cancel_open_limits(
         &mut self,
-        intent_id: &str,
-        book: &Book,
+        strategy: Option<&str>,
+        reason: CancelReason,
         now_ns: i64,
         out: &mut Vec<ExecEvent>,
-    ) -> Result<u64, ExecError> {
+    ) -> Result<(), ExecError> {
         let open: Vec<u64> = self
             .orders
             .values()
             .filter(|o| o.kind == OrderKind::Limit)
+            .filter(|o| strategy.is_none_or(|s| o.strategy_id == s))
             .filter(|o| matches!(o.state, OrderState::Open | OrderState::PartiallyFilled))
             .map(|o| o.id)
             .collect();
         for id in open {
-            self.request_cancel(id, CancelReason::Flatten, now_ns, out)?;
+            self.request_cancel(id, reason, now_ns, out)?;
         }
-        let net = self.account.position.net_qty.0;
+        Ok(())
+    }
+
+    /// Cancels the strategy's open limit orders, then sends an IOC for its
+    /// net at the worst displayed level so it walks the depth.
+    pub fn flatten_strategy(
+        &mut self,
+        intent_id: &str,
+        strategy_id: &str,
+        book: &Book,
+        now_ns: i64,
+        out: &mut Vec<ExecEvent>,
+    ) -> Result<u64, ExecError> {
+        self.cancel_open_limits(Some(strategy_id), CancelReason::Flatten, now_ns, out)?;
+        let net = self.strategy_position(strategy_id).net_qty.0;
         if net == 0 {
             return Err(ExecError::Flat);
         }
@@ -264,15 +331,40 @@ impl PaperVenue {
         let levels = opposite(book, side);
         let worst = levels.last().ok_or(ExecError::EmptySide(side))?.price;
         Ok(self.place(
-            intent_id,
-            side,
-            worst,
-            Price::ZERO,
-            Qty(net.abs()),
-            TimeInForce::Ioc,
-            OrderKind::Limit,
+            NewOrder {
+                intent_id,
+                strategy_id,
+                side,
+                price: worst,
+                stop: Price::ZERO,
+                take_profit: Price::ZERO,
+                qty: Qty(net.abs()),
+                tif: TimeInForce::Ioc,
+                kind: OrderKind::Limit,
+            },
             now_ns,
         ))
+    }
+
+    /// Every open order cancelled, every strategy position flattened.
+    pub fn flatten_all(
+        &mut self,
+        intent_id: &str,
+        book: &Book,
+        now_ns: i64,
+        out: &mut Vec<ExecEvent>,
+    ) -> Result<usize, ExecError> {
+        self.cancel_open_limits(None, CancelReason::Flatten, now_ns, out)?;
+        let ids: Vec<String> = self
+            .strategies
+            .iter()
+            .filter(|(_, p)| !p.net_qty.is_zero())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids {
+            self.flatten_strategy(intent_id, id, book, now_ns, out)?;
+        }
+        Ok(ids.len())
     }
 
     /// Drains everything due, matches resting orders and triggered stops
@@ -326,6 +418,9 @@ impl PaperVenue {
             let o = &self.orders[&id];
             (o.side, o.price, o.remaining(), o.tif)
         };
+        if self.orders[&id].is_terminal() {
+            return; // cancelled by a flatten before the ack landed
+        }
         let fills = match_levels(opposite(book, side), side, price, remaining, false);
         let total: i64 = fills.iter().map(|(_, q)| q.0).sum();
         if tif == TimeInForce::Fok && total < remaining.0 {
@@ -349,9 +444,8 @@ impl PaperVenue {
             (_, false, false) => (OrderState::Open, None),
         };
         self.finish(id, to, reason, ns, out);
-        if self.account.is_flat() {
-            self.cancel_stops(ns, out);
-        }
+        let strategy = self.orders[&id].strategy_id.clone();
+        self.settle_protection(&strategy, ns, out);
     }
 
     fn cancel(&mut self, id: u64, ns: i64, out: &mut Vec<ExecEvent>) {
@@ -394,21 +488,29 @@ impl PaperVenue {
         ns: i64,
         out: &mut Vec<ExecEvent>,
     ) {
-        let (side, kind, full) = {
+        let (side, kind, full, strategy) = {
             let o = self.orders.get_mut(&id).expect("order");
             o.filled = o.filled + qty;
             if o.pending_fill >= qty {
                 o.pending_fill = o.pending_fill - qty;
             }
-            (o.side, o.kind, o.filled >= o.qty)
+            (o.side, o.kind, o.filled >= o.qty, o.strategy_id.clone())
         };
         self.account.fill(side, price, qty);
+        apply_fill(
+            self.strategies.entry(strategy.clone()).or_default(),
+            side,
+            price,
+            qty,
+            self.qty_unit,
+        );
         out.push(ExecEvent::Fill {
             order_id: id,
             side,
             price,
             qty,
             thin_book,
+            strategy_id: strategy.clone(),
             ns,
         });
         let to = if full {
@@ -428,70 +530,86 @@ impl PaperVenue {
             ns,
         });
         if kind == OrderKind::Limit {
-            self.grow_stop(id, qty, ns);
+            self.grow_protection(id, qty, ns);
         }
-        if transition && self.account.is_flat() {
-            self.cancel_stops(ns, out);
+        if transition {
+            self.settle_protection(&strategy, ns, out);
         }
     }
 
-    /// One protective stop per parent, sized to what the parent has filled.
-    fn grow_stop(&mut self, parent: u64, qty: Qty, ns: i64) {
-        let (side, stop, intent_id) = {
+    /// One stop and, when the parent asks for one, one take-profit per
+    /// parent, each sized to what the parent has filled.
+    fn grow_protection(&mut self, parent: u64, qty: Qty, ns: i64) {
+        let (side, stop, take_profit, intent_id, strategy_id) = {
             let p = &self.orders[&parent];
-            (p.side, p.stop, p.intent_id.clone())
+            (
+                p.side,
+                p.stop,
+                p.take_profit,
+                p.intent_id.clone(),
+                p.strategy_id.clone(),
+            )
         };
-        if stop.is_zero() {
-            return;
-        }
-        let existing = self
-            .orders
-            .values_mut()
-            .find(|o| o.kind == OrderKind::Stop { parent } && !o.is_terminal());
-        match existing {
-            Some(s) => s.qty = s.qty + qty,
-            None => {
-                let side = match side {
-                    Side::Buy => Side::Sell,
-                    Side::Sell => Side::Buy,
-                };
-                self.place(
-                    &intent_id,
-                    side,
-                    stop,
-                    Price::ZERO,
-                    qty,
-                    TimeInForce::Gtc,
-                    OrderKind::Stop { parent },
-                    ns,
-                );
+        let exit_side = match side {
+            Side::Buy => Side::Sell,
+            Side::Sell => Side::Buy,
+        };
+        let wanted = [
+            (OrderKind::Stop { parent }, stop),
+            (OrderKind::Exit { parent }, take_profit),
+        ];
+        for (kind, price) in wanted {
+            if price.is_zero() {
+                continue;
+            }
+            let existing = self
+                .orders
+                .values_mut()
+                .find(|o| o.kind == kind && !o.is_terminal());
+            match existing {
+                Some(o) => o.qty = o.qty + qty,
+                None => {
+                    self.place(
+                        NewOrder {
+                            intent_id: &intent_id,
+                            strategy_id: &strategy_id,
+                            side: exit_side,
+                            price,
+                            stop: Price::ZERO,
+                            take_profit: Price::ZERO,
+                            qty,
+                            tif: TimeInForce::Gtc,
+                            kind,
+                        },
+                        ns,
+                    );
+                }
             }
         }
     }
 
-    fn cancel_stops(&mut self, ns: i64, out: &mut Vec<ExecEvent>) {
+    /// When a strategy is flat its stops and exits have nothing to protect.
+    fn settle_protection(&mut self, strategy_id: &str, ns: i64, out: &mut Vec<ExecEvent>) {
+        if !self.strategy_position(strategy_id).net_qty.is_zero() {
+            return;
+        }
         let ids: Vec<u64> = self
             .orders
             .values()
-            .filter(|o| matches!(o.kind, OrderKind::Stop { .. }) && !o.is_terminal())
+            .filter(|o| {
+                o.kind.parent().is_some() && !o.is_terminal() && o.strategy_id == strategy_id
+            })
             .map(|o| o.id)
             .collect();
         for id in ids {
-            let o = &self.orders[&id];
-            let to = OrderState::Canceled;
-            match o.state {
+            let reason = Some(CancelReason::PositionFlat);
+            match self.orders[&id].state {
                 OrderState::PendingNew | OrderState::PendingCancel => {
-                    self.finish(id, to, Some(CancelReason::PositionFlat), ns, out)
+                    self.finish(id, OrderState::Canceled, reason, ns, out)
                 }
                 OrderState::Open | OrderState::PartiallyFilled => {
-                    self.finish(
-                        id,
-                        OrderState::PendingCancel,
-                        Some(CancelReason::PositionFlat),
-                        ns,
-                        out,
-                    );
-                    self.finish(id, to, Some(CancelReason::PositionFlat), ns, out);
+                    self.finish(id, OrderState::PendingCancel, reason, ns, out);
+                    self.finish(id, OrderState::Canceled, reason, ns, out);
                 }
                 _ => {}
             }

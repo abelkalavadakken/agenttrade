@@ -72,6 +72,7 @@ fn place(side: Side, price: i64, stop: i64, qty: i64, tif: TimeInForce) -> Inten
         side,
         price: Price(price),
         stop: Price(stop),
+        take_profit: Price::ZERO,
         qty: Qty(qty),
         tif,
     }

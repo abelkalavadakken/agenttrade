@@ -96,6 +96,7 @@ fn good_place() -> Intent {
         side: Side::Buy,
         price: Price(773_629),
         stop: Price(770_000),
+        take_profit: Price::ZERO,
         qty: Qty(50_000_000),
         tif: TimeInForce::Gtc,
     }
@@ -304,6 +305,7 @@ fn missing_stop_and_wrong_side_stop() {
         side: Side::Sell,
         price: Price(773_628),
         stop: Price(773_000),
+        take_profit: Price::ZERO,
         qty: Qty(10_000_000),
         tif: TimeInForce::Gtc,
     };
@@ -368,6 +370,7 @@ fn leverage_measured_on_new_absolute_net() {
         side: Side::Sell,
         price: Price(773_628),
         stop: Price(780_000),
+        take_profit: Price::ZERO,
         qty: Qty(180_000_000),
         tif: TimeInForce::Gtc,
     };
@@ -382,6 +385,7 @@ fn leverage_measured_on_new_absolute_net() {
         side: Side::Sell,
         price: Price(773_628),
         stop: Price(780_000),
+        take_profit: Price::ZERO,
         qty: Qty(50_000_000),
         tif: TimeInForce::Gtc,
     };

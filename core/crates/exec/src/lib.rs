@@ -5,7 +5,7 @@ mod account;
 mod order;
 mod paper;
 
-pub use account::Account;
+pub use account::{apply_fill, Account};
 pub use order::{CancelReason, Order, OrderKind};
 pub use paper::{PaperConfig, PaperVenue};
 
@@ -28,6 +28,7 @@ pub enum ExecEvent {
         qty: Qty,
         /// A stop whose first pass could not complete against displayed depth.
         thin_book: bool,
+        strategy_id: String,
         ns: i64,
     },
     Position {
@@ -37,7 +38,7 @@ pub enum ExecEvent {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExecError {
     #[error("unknown order {0}")]
     UnknownOrder(u64),
@@ -47,4 +48,6 @@ pub enum ExecError {
     EmptySide(Side),
     #[error("nothing to flatten")]
     Flat,
+    #[error("no position for strategy {0}")]
+    UnknownStrategy(String),
 }
