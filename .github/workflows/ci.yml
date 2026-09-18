@@ -25,6 +25,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core
+      - name: Cache the acceptance tape
+        uses: actions/cache@v4
+        with:
+          path: tests/fixtures/acceptance.tape
+          key: acceptance-tape-v0.1.0-core
+      - run: ../tests/fixtures/fetch.sh
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

@@ -1,7 +1,9 @@
 //! The gate for unfreezing agents: a tape recorded by the entrypoint replays
 //! with the autonomous strategy firing and filling, the gated strategy waking
 //! and expiring unconfirmed, the gate passing and rejecting, and zero hash
-//! mismatches. tests/fixtures/acceptance.tape was recorded live on Kraken.
+//! mismatches. tests/fixtures/acceptance.tape was recorded live on Kraken and
+//! is fetched from the v0.1.0-core release by tests/fixtures/fetch.sh; it is
+//! not in git. acceptance_small.rs covers the first 30 s, which is.
 
 use std::fs::File;
 
@@ -21,7 +23,9 @@ const TAPE: &str = concat!(
 fn acceptance_tape_replays_end_to_end() {
     let cfg = CoreConfig::paper_defaults(instruments::find("kraken", "BTC/USD").unwrap());
     let (mut core, _s, _e) = Core::new(cfg, std::io::sink(), Default::default()).unwrap();
-    let mut reader = Reader::new(File::open(TAPE).unwrap(), Mode::Fast).unwrap();
+    let file = File::open(TAPE)
+        .unwrap_or_else(|_| panic!("acceptance tape missing: run tests/fixtures/fetch.sh"));
+    let mut reader = Reader::new(file, Mode::Fast).unwrap();
     assert_eq!(reader.sources(), &SOURCES.map(String::from));
     let (mut verified, mut mismatches) = (0u64, 0u64);
     let (mut approved, mut rejected) = (0u64, 0u64);
