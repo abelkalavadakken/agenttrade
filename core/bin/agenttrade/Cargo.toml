@@ -1,0 +1,16 @@
+[package]
+name = "agenttrade"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+types = { path = "../../crates/types" }
+feed = { path = "../../crates/feed" }
+api = { path = "../../crates/api" }
+tape = { path = "../../crates/tape" }
+tokio.workspace = true
+tonic.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

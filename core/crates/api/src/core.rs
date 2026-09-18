@@ -163,6 +163,9 @@ impl StateSnapshot {
     }
 }
 
+/// The core clock is monotonic: an input stamped earlier than the last one
+/// (a tick queued behind a later frame) does not move it back. Live and
+/// replay apply the same rule to the same sequence, so they agree.
 pub struct Core<W: Write> {
     cfg: CoreConfig,
     tape: tape::Writer<W>,
@@ -298,19 +301,20 @@ impl<W: Write> Core<W> {
         let mut fill = false;
         match input {
             CoreInput::Feed(FeedMsg::Raw { recv_ns, bytes }) => {
-                self.now_ns = recv_ns;
+                self.now_ns = self.now_ns.max(recv_ns);
                 self.tape.append(recv_ns, SRC_WS, &bytes)?;
                 let handled = self.tracker.on_frame(&bytes);
                 for e in handled.events {
                     match e {
                         FeedEvent::Book(_) => {
                             self.sequence_id += 1;
-                            self.features.on_book(self.tracker.book(), recv_ns);
+                            let now = self.now_ns;
+                            self.features.on_book(self.tracker.book(), now);
                             self.venue
-                                .on_book(self.tracker.book(), recv_ns, &mut self.exec_out);
+                                .on_book(self.tracker.book(), now, &mut self.exec_out);
                             self.emit_mid();
                         }
-                        FeedEvent::Trade(t) => self.features.on_trade(&t, recv_ns),
+                        FeedEvent::Trade(t) => self.features.on_trade(&t, self.now_ns),
                         FeedEvent::Resync(_) => self.features.on_stale(),
                     }
                 }
@@ -319,19 +323,25 @@ impl<W: Write> Core<W> {
             }
             CoreInput::Feed(FeedMsg::Event { recv_ns, event }) => {
                 // The client's own tracker decided a Silent or Disconnected
-                // resync; book and trade events it derived are ignored, the
-                // core derives its own from raw frames.
-                if let FeedEvent::Resync(_) = event {
-                    self.now_ns = recv_ns;
-                    self.tracker.expect_snapshot();
-                    self.features.on_stale();
-                }
+                // resync: recorded as a control marker so replay sees it.
+                // Book and trade events it derived are not inputs at all; the
+                // core derives its own from raw frames, so they must not
+                // touch state or the hash.
+                let FeedEvent::Resync(reason) = event else {
+                    return Ok(());
+                };
+                let text = format!("resync {reason:?}");
+                self.now_ns = self.now_ns.max(recv_ns);
+                self.tape.append(recv_ns, SRC_CTL, text.as_bytes())?;
+                self.resync();
             }
             CoreInput::Feed(FeedMsg::Control { recv_ns, text }) => {
-                self.now_ns = recv_ns;
+                self.now_ns = self.now_ns.max(recv_ns);
                 self.tape.append(recv_ns, SRC_CTL, text.as_bytes())?;
                 if text == "tick" {
                     fill |= self.tick(recv_ns)?;
+                } else if text.starts_with("resync ") {
+                    self.resync();
                 } else if text == "connected" {
                     self.venue_connected = true;
                     self.tracker.expect_snapshot();
@@ -346,7 +356,7 @@ impl<W: Write> Core<W> {
                 now_ns,
                 reply,
             } => {
-                self.now_ns = now_ns;
+                self.now_ns = self.now_ns.max(now_ns);
                 let response = self.intent(request, now_ns)?;
                 let _ = fill;
                 self.drain_exec()?;
@@ -390,6 +400,11 @@ impl<W: Write> Core<W> {
             Ok(env) => self.process_envelope(&env, now_ns)?,
         };
         Ok(response)
+    }
+
+    fn resync(&mut self) {
+        self.tracker.expect_snapshot();
+        self.features.on_stale();
     }
 
     /// Bars close, due acks and fills drain, strategies run, the timer wakes.
@@ -853,6 +868,13 @@ impl CoreHandle {
 
     pub fn sender(&self) -> SyncSender<CoreInput> {
         self.tx.clone()
+    }
+
+    /// Drops this handle's sender and waits for the loop to flush and exit.
+    /// Every other sender clone must already be gone.
+    pub fn shutdown(self) -> CoreStats {
+        drop(self.tx);
+        self.join.join().expect("core thread")
     }
 }
 

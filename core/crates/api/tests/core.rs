@@ -508,3 +508,30 @@ fn strategy_orders_are_recorded_gated_and_replay_verifies() {
     );
     let _ = final_hash;
 }
+
+#[test]
+fn client_derived_events_do_not_touch_state_or_the_hash() {
+    let (mut core, _s, _e) = Core::new(cfg(), std::io::sink(), Default::default()).unwrap();
+    let before = core.hasher().hex();
+    let events_before = core.hasher().events();
+    core.handle(CoreInput::Feed(FeedMsg::Event {
+        recv_ns: 5,
+        event: types::FeedEvent::Trade(types::TradeEvent {
+            side: types::Side::Buy,
+            price: types::Price(1),
+            qty: types::Qty(1),
+            venue_time_ns: 0,
+            trade_id: 1,
+        }),
+    }))
+    .unwrap();
+    assert_eq!(core.hasher().hex(), before);
+    assert_eq!(core.hasher().events(), events_before);
+    // A client resync is an input: it lands on the tape and in the chain.
+    core.handle(CoreInput::Feed(FeedMsg::Event {
+        recv_ns: 6,
+        event: types::FeedEvent::Resync(types::ResyncReason::Silent),
+    }))
+    .unwrap();
+    assert_eq!(core.hasher().events(), events_before + 1);
+}

@@ -20,19 +20,14 @@ commit that produced it and the machine it ran on.
 
 ### Book apply, Kraken BTC/USD depth 10
 
-Tape: 600 awake seconds recorded 2026-09-12, 4,491 book events
-(3 snapshots, 4,488 deltas). Latency is `Instant` around `Book::apply`,
-release build, median of 5 runs.
+Tape: `tests/fixtures/acceptance.tape`, 900 s recorded 2026-09-18 by
+`bin/agenttrade`, 52,775 book events (1 snapshot, 52,774 deltas) and 1,716
+trades. Latency is `Instant` around `Book::apply` in `bin/replay`, release
+build.
 
 | commit | machine | events applied | crossed | checksum mismatches | p50 | p99 |
 |---|---|---|---|---|---|---|
-| 4b0a384 | Apple M2, 16 GB, macOS 26.6.2, rustc 1.98.1 | 15,600 | 0 | 0 | 708 ns | 792 ns |
-
-Tape: 600 s recorded 2026-09-18, machine awake, no reconnects, 15,600 book
-events (1 snapshot, 15,599 deltas) and 612 trades. p99 varied between 750 ns
-and 833 ns across the 5 runs; p50 did not move. The earlier row on the
-2026-09-12 tape read 416 ns p50 on a quieter book; the number moved with the
-tape and the day, not the code.
+| 582fea3 | Apple M2, 16 GB, macOS 26.6.2, rustc 1.98.1 | 52,775 | 0 | 0 | 416 ns | 584 ns |
 
 ### Paper venue demo, Kraken BTC/USD
 
@@ -45,10 +40,25 @@ tape through feed, book, risk gate and paper venue with six scripted intents.
 
 The three rejections are MissingStop, PriceOutOfBand and ExceedsSingleLossLimit.
 
-### Replay determinism
+### Replay determinism and the acceptance tape
 
-`bin/replay --mode recorded` drives the core over the tape, re-injects
-recorded intents, and compares every StateHash record. The 2026-09-18 tape
-was recorded before the core wrote hashes, so it verifies 0 hashes; the
-first tape recorded by the entrypoint will carry them and this line will
-report the count.
+`bin/replay --mode recorded` drives the core over a tape, re-injects recorded
+LLM intents, regenerates strategy intents, and compares every StateHash
+record. `crates/api/tests/acceptance.rs` does the same over
+`tests/fixtures/acceptance.tape` in CI and asserts the gate for unfreezing
+agents:
+
+| what | on the acceptance tape |
+|---|---|
+| hash records verified | 89, 0 mismatches, final hash identical |
+| autonomous strategy `mr_ofi` | 19 orders sent, 44 fills |
+| gated strategy `breakout` | 4 setups, 4 Wake events, 4 expired unconfirmed, 0 confirmed |
+| gate | 30 approved, 1 rejected (MissingStop) |
+| timer wakes | 15 |
+
+The tape was recorded live with `--enable mr_ofi --enable breakout`,
+mr_ofi tuned to fire (`ofi_threshold` 0.2 BTC, `min_spread_ticks` 1,
+`hold_ns` 20 s, `cooldown_ns` 30 s) and breakout with `lookback_bars` 5,
+`volume_mult_bps` 0 and `ttl_ns` 30 s, plus one rejected and one approved
+discretionary PLACE and a FLATTEN_ALL sent over gRPC. Paper venue, no fees,
+no queue position, optimistic.

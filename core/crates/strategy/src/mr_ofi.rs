@@ -13,6 +13,8 @@ pub struct MrOfi {
     entered_ns: Option<i64>,
     entry_ofi_sign: i64,
     cooldown_until_ns: i64,
+    /// A flatten is in flight; wait for the position to clear before acting again.
+    exiting: bool,
 }
 
 impl Default for MrOfi {
@@ -65,6 +67,7 @@ impl MrOfi {
             entered_ns: None,
             entry_ofi_sign: 0,
             cooldown_until_ns: 0,
+            exiting: false,
         }
     }
 
@@ -96,11 +99,15 @@ impl Strategy for MrOfi {
         let in_position = !st.position.net_qty.is_zero();
 
         if in_position {
+            if self.exiting {
+                return None; // one flatten at a time; exec is working on it
+            }
             let entered = self.entered_ns.unwrap_or(st.now_ns);
             let flipped = ofi.signum() != 0 && ofi.signum() != self.entry_ofi_sign;
             let held_long_enough = st.now_ns - entered >= self.p("hold_ns");
             if flipped || held_long_enough {
                 self.entered_ns = None;
+                self.exiting = true;
                 self.cooldown_until_ns = st.now_ns + self.p("cooldown_ns");
                 return Some(Action::Flatten {
                     reason: if flipped {
@@ -112,6 +119,7 @@ impl Strategy for MrOfi {
             }
             return None;
         }
+        self.exiting = false;
 
         if st.open_orders > 0 || f.book_stale || st.book.is_stale() {
             return None;
@@ -143,6 +151,8 @@ impl Strategy for MrOfi {
         };
         self.entered_ns = Some(st.now_ns);
         self.entry_ofi_sign = ofi.signum();
+        // One entry per cooldown, whether or not the gate takes it.
+        self.cooldown_until_ns = st.now_ns + self.p("cooldown_ns");
         Some(Action::Place(Order {
             side,
             price,
@@ -157,9 +167,19 @@ impl Strategy for MrOfi {
         SetupState::None
     }
 
+    fn state_words(&self) -> Vec<i64> {
+        vec![
+            self.entered_ns.unwrap_or(-1),
+            self.entry_ofi_sign,
+            self.cooldown_until_ns,
+            self.exiting as i64,
+        ]
+    }
+
     fn reset(&mut self) {
         self.entered_ns = None;
         self.entry_ofi_sign = 0;
         self.cooldown_until_ns = 0;
+        self.exiting = false;
     }
 }

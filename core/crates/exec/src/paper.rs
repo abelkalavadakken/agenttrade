@@ -328,6 +328,21 @@ impl PaperVenue {
             return Err(ExecError::Flat);
         }
         let side = if net > 0 { Side::Sell } else { Side::Buy };
+        // Limit orders already working on the exit side (an earlier flatten
+        // still pending its ack) count against the net, so two flattens in
+        // flight cannot flip the position. Stops and exits do not count: they
+        // are cancelled when the position clears.
+        let in_flight: i64 = self
+            .orders
+            .values()
+            .filter(|o| o.strategy_id == strategy_id && o.kind == OrderKind::Limit)
+            .filter(|o| !o.is_terminal() && o.side == side)
+            .map(|o| o.remaining().0)
+            .sum();
+        let net = net.abs() - in_flight;
+        if net <= 0 {
+            return Err(ExecError::Flat);
+        }
         let levels = opposite(book, side);
         let worst = levels.last().ok_or(ExecError::EmptySide(side))?.price;
         Ok(self.place(
@@ -338,7 +353,7 @@ impl PaperVenue {
                 price: worst,
                 stop: Price::ZERO,
                 take_profit: Price::ZERO,
-                qty: Qty(net.abs()),
+                qty: Qty(net),
                 tif: TimeInForce::Ioc,
                 kind: OrderKind::Limit,
             },

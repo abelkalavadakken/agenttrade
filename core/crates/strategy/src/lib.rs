@@ -99,6 +99,12 @@ pub trait Strategy: Send {
     fn on_setup_cleared(&mut self) {}
     fn reset(&mut self);
 
+    /// Internal state that decides future actions (timers, flags), for the
+    /// replay hash. Params and counters are hashed by the runner already.
+    fn state_words(&self) -> Vec<i64> {
+        Vec::new()
+    }
+
     fn mode(&self) -> Mode {
         self.horizon().mode()
     }
