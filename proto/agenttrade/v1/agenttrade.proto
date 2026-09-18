@@ -129,6 +129,7 @@ message SubmitIntentRequest {
   int64 target_price = 10;
   int64 stop_loss = 11; // Mandatory for PLACE intents
   int64 quantity = 12;
+  uint64 target_order_id = 13; // CANCEL only: the order to cancel
 }
 
 message SubmitIntentResponse {
