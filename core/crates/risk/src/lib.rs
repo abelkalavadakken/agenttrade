@@ -4,7 +4,9 @@
 mod arith;
 
 use book::Book;
-use types::{Instrument, Intent, IntentEnvelope, Position, Price, Qty, RejectionCode, Side};
+use types::{
+    Instrument, Intent, IntentEnvelope, Position, Price, Qty, RejectionCode, Side, TimeInForce,
+};
 
 pub use arith::{loss_within_budget, notional_within_leverage, pow10};
 
@@ -18,7 +20,32 @@ pub struct RiskConfig {
     pub max_intents_per_window: u32,
     pub window_ns: i64,
     pub max_drawdown_bps: i64,
+    /// Addendum: allocation and the discretionary profile.
+    pub max_strategies_enabled: u32,
+    pub max_size_multiplier_bps: i64,
+    pub discretionary_max_qty: Qty,
+    pub discretionary_max_intents_per_window: u32,
 }
+
+/// Hard bounds of one tunable parameter, as the strategy declares them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamBounds {
+    pub name: String,
+    pub min: i64,
+    pub max: i64,
+}
+
+/// What the gate needs to know about each registered strategy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrategySummary {
+    pub id: String,
+    pub enabled: bool,
+    pub setup_active: Option<u64>,
+    pub params: Vec<ParamBounds>,
+}
+
+/// The reserved strategy id for LLM PLACE orders.
+pub const DISCRETIONARY: &str = "discretionary";
 
 pub struct RiskInputs<'a> {
     pub instrument: &'a Instrument,
@@ -31,8 +58,10 @@ pub struct RiskInputs<'a> {
     pub peak_equity: i64,
     pub open_orders: u32,
     pub intents_in_window: u32,
+    pub discretionary_intents_in_window: u32,
     pub kill_switch: bool,
     pub now_ns: i64,
+    pub strategies: &'a [StrategySummary],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,11 +87,26 @@ const BPS: i64 = 10_000;
 type Check = fn(&RiskConfig, &RiskInputs, &IntentEnvelope) -> Option<Verdict>;
 
 /// Runs the checks in docs/risk.md order and stops at the first failure.
+/// FLATTEN_ALL only needs a connected venue: the exit is the safe direction.
 pub fn check(cfg: &RiskConfig, inp: &RiskInputs, env: &IntentEnvelope) -> Verdict {
-    let steps: [Check; 8] = [
+    if matches!(env.intent, Intent::FlattenAll) {
+        return if inp.venue_connected {
+            Verdict::Approved
+        } else {
+            Verdict::Rejected {
+                code: RejectionCode::VenueDisconnected,
+                reason: "venue not connected",
+            }
+        };
+    }
+    let steps: [Check; 12] = [
         kill_switch,
         market_state,
         staleness,
+        allocate,
+        tune,
+        setup_decision,
+        discretionary_profile,
         alignment,
         price_band,
         stop_and_sizing,
@@ -220,7 +264,7 @@ fn leverage(cfg: &RiskConfig, inp: &RiskInputs, env: &IntentEnvelope) -> Option<
 
 fn rate_limit(cfg: &RiskConfig, inp: &RiskInputs, env: &IntentEnvelope) -> Option<Verdict> {
     let is_place = matches!(env.intent, Intent::Place { .. });
-    let counts = is_place || matches!(env.intent, Intent::Flatten);
+    let counts = is_place || matches!(env.intent, Intent::Flatten | Intent::Tune { .. });
     if !counts {
         return None;
     }
@@ -231,6 +275,149 @@ fn rate_limit(cfg: &RiskConfig, inp: &RiskInputs, env: &IntentEnvelope) -> Optio
         return reject(
             RejectionCode::RateLimitExceeded,
             "too many intents in window",
+        );
+    }
+    if is_place
+        && is_discretionary(inp, env)
+        && inp.discretionary_intents_in_window >= cfg.discretionary_max_intents_per_window
+    {
+        return reject(
+            RejectionCode::RateLimitExceeded,
+            "discretionary intents in window",
+        );
+    }
+    None
+}
+
+fn strategy<'a>(inp: &'a RiskInputs, id: &str) -> Option<&'a StrategySummary> {
+    inp.strategies.iter().find(|s| s.id == id)
+}
+
+/// A PLACE whose agent is not a registered strategy runs the discretionary profile.
+fn is_discretionary(inp: &RiskInputs, env: &IntentEnvelope) -> bool {
+    strategy(inp, &env.agent_id).is_none()
+}
+
+fn allocate(cfg: &RiskConfig, inp: &RiskInputs, env: &IntentEnvelope) -> Option<Verdict> {
+    let Intent::Allocate(a) = &env.intent else {
+        return None;
+    };
+    let Some(target) = strategy(inp, &a.strategy_id) else {
+        return reject(RejectionCode::InvalidIntent, "unknown strategy");
+    };
+    if !(0..=cfg.max_size_multiplier_bps).contains(&a.size_multiplier_bps) {
+        return reject(
+            RejectionCode::AllocationLimit,
+            "size multiplier out of bounds",
+        );
+    }
+    let enabled = inp.strategies.iter().filter(|s| s.enabled).count() as u32;
+    if a.enabled && !target.enabled && enabled >= cfg.max_strategies_enabled {
+        return reject(
+            RejectionCode::AllocationLimit,
+            "too many strategies enabled",
+        );
+    }
+    None
+}
+
+fn tune(_: &RiskConfig, inp: &RiskInputs, env: &IntentEnvelope) -> Option<Verdict> {
+    let Intent::Tune {
+        strategy_id,
+        param,
+        value,
+    } = &env.intent
+    else {
+        return None;
+    };
+    let Some(target) = strategy(inp, strategy_id) else {
+        return reject(RejectionCode::InvalidIntent, "unknown strategy");
+    };
+    let Some(bounds) = target.params.iter().find(|p| &p.name == param) else {
+        return reject(RejectionCode::InvalidIntent, "unknown param");
+    };
+    if !(bounds.min..=bounds.max).contains(value) {
+        return reject(RejectionCode::ParamOutOfBounds, "value outside hard bounds");
+    }
+    None
+}
+
+fn setup_decision(cfg: &RiskConfig, inp: &RiskInputs, env: &IntentEnvelope) -> Option<Verdict> {
+    let (strategy_id, setup_id, multiplier) = match &env.intent {
+        Intent::ConfirmSetup {
+            strategy_id,
+            setup_id,
+            size_multiplier_bps,
+        } => (strategy_id, *setup_id, Some(*size_multiplier_bps)),
+        Intent::RejectSetup {
+            strategy_id,
+            setup_id,
+        } => (strategy_id, *setup_id, None),
+        _ => return None,
+    };
+    let Some(target) = strategy(inp, strategy_id) else {
+        return reject(RejectionCode::InvalidIntent, "unknown strategy");
+    };
+    if target.setup_active != Some(setup_id) {
+        return reject(RejectionCode::InvalidIntent, "setup not active");
+    }
+    if let Some(m) = multiplier {
+        if !(0..=cfg.max_size_multiplier_bps).contains(&m) {
+            return reject(
+                RejectionCode::AllocationLimit,
+                "size multiplier out of bounds",
+            );
+        }
+    }
+    None
+}
+
+/// docs/risk.md addendum: smaller size, limit only, stop and take-profit required.
+fn discretionary_profile(
+    cfg: &RiskConfig,
+    inp: &RiskInputs,
+    env: &IntentEnvelope,
+) -> Option<Verdict> {
+    let Intent::Place {
+        side,
+        price,
+        take_profit,
+        qty,
+        tif,
+        ..
+    } = &env.intent
+    else {
+        return None;
+    };
+    if !is_discretionary(inp, env) {
+        return None;
+    }
+    if *qty > cfg.discretionary_max_qty {
+        return reject(
+            RejectionCode::ExceedsSingleLossLimit,
+            "discretionary max qty",
+        );
+    }
+    if *tif == TimeInForce::Fok {
+        return reject(
+            RejectionCode::InvalidIntent,
+            "discretionary orders are GTC or IOC",
+        );
+    }
+    if take_profit.is_zero() {
+        return reject(
+            RejectionCode::MissingExitPlan,
+            "discretionary place without take_profit",
+        );
+    }
+    let wrong_side = match side {
+        Side::Buy => take_profit <= price,
+        Side::Sell => take_profit >= price,
+    };
+    if wrong_side {
+        return reject(
+            RejectionCode::InvalidIntent,
+            "take_profit on wrong side of price",
         );
     }
     None

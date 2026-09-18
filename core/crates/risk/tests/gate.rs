@@ -1,8 +1,8 @@
 use book::Book;
-use risk::{check, RiskConfig, RiskInputs, Verdict};
+use risk::{check, ParamBounds, RiskConfig, RiskInputs, StrategySummary, Verdict};
 use types::{
-    instruments, BookEvent, Instrument, Intent, IntentEnvelope, Level, Position, Price, Qty,
-    RejectionCode, Side, TimeInForce,
+    instruments, Allocation, BookEvent, Instrument, Intent, IntentEnvelope, Level, OnDisable,
+    Position, Price, Qty, RejectionCode, Side, TimeInForce,
 };
 
 fn lv(p: i64, q: i64) -> Level {
@@ -44,12 +44,44 @@ fn cfg() -> RiskConfig {
         max_intents_per_window: 10,
         window_ns: 60_000_000_000,
         max_drawdown_bps: 1_000,
+        max_strategies_enabled: 2,
+        max_size_multiplier_bps: 20_000,
+        discretionary_max_qty: Qty(1_000_000),
+        discretionary_max_intents_per_window: 5,
     }
+}
+
+fn strategies() -> Vec<StrategySummary> {
+    vec![
+        StrategySummary {
+            id: "mr_ofi".into(),
+            enabled: true,
+            setup_active: None,
+            params: vec![ParamBounds {
+                name: "size".into(),
+                min: 10_000,
+                max: 100_000_000,
+            }],
+        },
+        StrategySummary {
+            id: "breakout".into(),
+            enabled: false,
+            setup_active: Some(77),
+            params: vec![],
+        },
+        StrategySummary {
+            id: "third".into(),
+            enabled: true,
+            setup_active: None,
+            params: vec![],
+        },
+    ]
 }
 
 struct Fixture {
     instrument: Instrument,
     book: Book,
+    strategies: Vec<StrategySummary>,
 }
 
 impl Fixture {
@@ -57,6 +89,7 @@ impl Fixture {
         Self {
             instrument: instruments::find("kraken", "BTC/USD").unwrap(),
             book: book(),
+            strategies: strategies(),
         }
     }
 
@@ -72,16 +105,22 @@ impl Fixture {
             peak_equity: 1_000_000,
             open_orders: 0,
             intents_in_window: 0,
+            discretionary_intents_in_window: 0,
             kill_switch: false,
             now_ns: 0,
+            strategies: &self.strategies,
         }
     }
 }
 
 fn env(intent: Intent) -> IntentEnvelope {
+    env_as("mr_ofi", intent)
+}
+
+fn env_as(agent: &str, intent: Intent) -> IntentEnvelope {
     IntentEnvelope {
         intent_id: "i1".into(),
-        agent_id: "trader".into(),
+        agent_id: agent.into(),
         source_sequence_id: 1_000,
         generated_time_ns: 0,
         venue: "kraken".into(),
@@ -187,6 +226,7 @@ fn venue_disconnected_and_stale_book() {
     let empty = Fixture {
         instrument: f.instrument.clone(),
         book: Book::new(10),
+        strategies: strategies(),
     };
     assert_eq!(
         code(check(&cfg(), &empty.inputs(), &env(Intent::Noop))),
@@ -443,4 +483,246 @@ fn first_failing_check_wins() {
         code(check(&cfg(), &inp, &env(bad))),
         RejectionCode::MissingStop
     );
+}
+
+fn alloc(id: &str, enabled: bool, bps: i64) -> Intent {
+    Intent::Allocate(Allocation {
+        strategy_id: id.into(),
+        enabled,
+        size_multiplier_bps: bps,
+        on_disable: OnDisable::Flatten,
+    })
+}
+
+#[test]
+fn allocate_checks() {
+    let f = Fixture::new();
+    assert_eq!(
+        check(&cfg(), &f.inputs(), &env(alloc("mr_ofi", true, 5_000))),
+        Verdict::Approved
+    );
+    assert_eq!(
+        code(check(&cfg(), &f.inputs(), &env(alloc("nope", true, 5_000)))),
+        RejectionCode::InvalidIntent
+    );
+    assert_eq!(
+        code(check(
+            &cfg(),
+            &f.inputs(),
+            &env(alloc("mr_ofi", true, 20_001))
+        )),
+        RejectionCode::AllocationLimit
+    );
+    assert_eq!(
+        code(check(&cfg(), &f.inputs(), &env(alloc("mr_ofi", true, -1)))),
+        RejectionCode::AllocationLimit
+    );
+    // Two enabled already: enabling a third trips the limit, re-enabling an enabled one does not.
+    assert_eq!(
+        code(check(
+            &cfg(),
+            &f.inputs(),
+            &env(alloc("breakout", true, 10_000))
+        )),
+        RejectionCode::AllocationLimit
+    );
+    assert_eq!(
+        check(&cfg(), &f.inputs(), &env(alloc("third", true, 10_000))),
+        Verdict::Approved
+    );
+    assert_eq!(
+        check(&cfg(), &f.inputs(), &env(alloc("third", false, 10_000))),
+        Verdict::Approved
+    );
+    let mut inp = f.inputs();
+    inp.kill_switch = true;
+    assert_eq!(
+        code(check(&cfg(), &inp, &env(alloc("third", false, 10_000)))),
+        RejectionCode::KillSwitchActive
+    );
+}
+
+#[test]
+fn tune_checks() {
+    let f = Fixture::new();
+    let t = |id: &str, p: &str, v: i64| Intent::Tune {
+        strategy_id: id.into(),
+        param: p.into(),
+        value: v,
+    };
+    assert_eq!(
+        check(&cfg(), &f.inputs(), &env(t("mr_ofi", "size", 10_000))),
+        Verdict::Approved
+    );
+    assert_eq!(
+        check(&cfg(), &f.inputs(), &env(t("mr_ofi", "size", 100_000_000))),
+        Verdict::Approved
+    );
+    assert_eq!(
+        code(check(&cfg(), &f.inputs(), &env(t("mr_ofi", "size", 9_999)))),
+        RejectionCode::ParamOutOfBounds
+    );
+    assert_eq!(
+        code(check(
+            &cfg(),
+            &f.inputs(),
+            &env(t("mr_ofi", "size", 100_000_001))
+        )),
+        RejectionCode::ParamOutOfBounds
+    );
+    assert_eq!(
+        code(check(&cfg(), &f.inputs(), &env(t("mr_ofi", "nope", 1)))),
+        RejectionCode::InvalidIntent
+    );
+    assert_eq!(
+        code(check(&cfg(), &f.inputs(), &env(t("nope", "size", 1)))),
+        RejectionCode::InvalidIntent
+    );
+    let mut inp = f.inputs();
+    inp.intents_in_window = 10;
+    assert_eq!(
+        code(check(&cfg(), &inp, &env(t("mr_ofi", "size", 10_000)))),
+        RejectionCode::RateLimitExceeded
+    );
+}
+
+#[test]
+fn setup_decision_checks() {
+    let f = Fixture::new();
+    let confirm = |id: &str, setup: u64, m: i64| Intent::ConfirmSetup {
+        strategy_id: id.into(),
+        setup_id: setup,
+        size_multiplier_bps: m,
+    };
+    assert_eq!(
+        check(&cfg(), &f.inputs(), &env(confirm("breakout", 77, 10_000))),
+        Verdict::Approved
+    );
+    assert_eq!(
+        check(&cfg(), &f.inputs(), &env(confirm("breakout", 77, 0))),
+        Verdict::Approved,
+        "zero is a skip"
+    );
+    assert_eq!(
+        code(check(
+            &cfg(),
+            &f.inputs(),
+            &env(confirm("breakout", 78, 10_000))
+        )),
+        RejectionCode::InvalidIntent
+    );
+    assert_eq!(
+        code(check(
+            &cfg(),
+            &f.inputs(),
+            &env(confirm("mr_ofi", 1, 10_000))
+        )),
+        RejectionCode::InvalidIntent
+    );
+    assert_eq!(
+        code(check(
+            &cfg(),
+            &f.inputs(),
+            &env(confirm("breakout", 77, 20_001))
+        )),
+        RejectionCode::AllocationLimit
+    );
+    let reject_ = Intent::RejectSetup {
+        strategy_id: "breakout".into(),
+        setup_id: 77,
+    };
+    assert_eq!(check(&cfg(), &f.inputs(), &env(reject_)), Verdict::Approved);
+}
+
+#[test]
+fn flatten_all_passes_kill_switch_and_stale_book_but_not_disconnect() {
+    let mut f = Fixture::new();
+    f.book.mark_stale();
+    let mut inp = f.inputs();
+    inp.kill_switch = true;
+    assert_eq!(
+        check(&cfg(), &inp, &env(Intent::FlattenAll)),
+        Verdict::Approved
+    );
+    inp.venue_connected = false;
+    assert_eq!(
+        code(check(&cfg(), &inp, &env(Intent::FlattenAll))),
+        RejectionCode::VenueDisconnected
+    );
+}
+
+#[test]
+fn discretionary_profile() {
+    let f = Fixture::new();
+    let good = Intent::Place {
+        side: Side::Buy,
+        price: Price(773_629),
+        stop: Price(770_000),
+        take_profit: Price(780_000),
+        qty: Qty(1_000_000),
+        tif: TimeInForce::Gtc,
+    };
+    let d = |i: Intent| env_as("discretionary", i);
+    assert_eq!(
+        check(&cfg(), &f.inputs(), &d(good.clone())),
+        Verdict::Approved
+    );
+    let edit = |f2: &dyn Fn(&mut Intent)| {
+        let mut i = good.clone();
+        f2(&mut i);
+        i
+    };
+    let big = edit(&|i| {
+        if let Intent::Place { qty, .. } = i {
+            *qty = Qty(1_000_001)
+        }
+    });
+    assert_eq!(
+        code(check(&cfg(), &f.inputs(), &d(big))),
+        RejectionCode::ExceedsSingleLossLimit
+    );
+    let no_tp = edit(&|i| {
+        if let Intent::Place { take_profit, .. } = i {
+            *take_profit = Price::ZERO
+        }
+    });
+    assert_eq!(
+        code(check(&cfg(), &f.inputs(), &d(no_tp))),
+        RejectionCode::MissingExitPlan
+    );
+    let wrong_tp = edit(&|i| {
+        if let Intent::Place { take_profit, .. } = i {
+            *take_profit = Price(773_000)
+        }
+    });
+    assert_eq!(
+        code(check(&cfg(), &f.inputs(), &d(wrong_tp))),
+        RejectionCode::InvalidIntent
+    );
+    let fok = edit(&|i| {
+        if let Intent::Place { tif, .. } = i {
+            *tif = TimeInForce::Fok
+        }
+    });
+    assert_eq!(
+        code(check(&cfg(), &f.inputs(), &d(fok))),
+        RejectionCode::InvalidIntent
+    );
+    let mut inp = f.inputs();
+    inp.discretionary_intents_in_window = 5;
+    assert_eq!(
+        code(check(&cfg(), &inp, &d(good.clone()))),
+        RejectionCode::RateLimitExceeded
+    );
+    // A strategy is not held to the discretionary profile: no take-profit, bigger size.
+    let strat = edit(&|i| {
+        if let Intent::Place {
+            take_profit, qty, ..
+        } = i
+        {
+            *take_profit = Price::ZERO;
+            *qty = Qty(5_000_000)
+        }
+    });
+    assert_eq!(check(&cfg(), &f.inputs(), &env(strat)), Verdict::Approved);
 }

@@ -69,6 +69,10 @@ impl CoreConfig {
                 max_intents_per_window: 60,
                 window_ns: 60_000_000_000,
                 max_drawdown_bps: 1_000,
+                max_strategies_enabled: 2,
+                max_size_multiplier_bps: 20_000,
+                discretionary_max_qty: types::Qty(1_000_000),
+                discretionary_max_intents_per_window: 5,
             },
             paper: PaperConfig {
                 ack_latency_ns: 50_000_000,
@@ -162,6 +166,7 @@ pub struct Core<W: Write> {
     kill_switch: bool,
     window_start_ns: i64,
     intents_in_window: u32,
+    discretionary_intents_in_window: u32,
     last_mid_emit_ns: i64,
     last_mid_emitted: Option<i64>,
     last_hash_record_at: u64,
@@ -212,6 +217,7 @@ impl<W: Write> Core<W> {
             kill_switch: false,
             window_start_ns: 0,
             intents_in_window: 0,
+            discretionary_intents_in_window: 0,
             last_mid_emit_ns: i64::MIN / 2,
             last_mid_emitted: None,
             last_hash_record_at: 0,
@@ -358,6 +364,7 @@ impl<W: Write> Core<W> {
         if now_ns - self.window_start_ns >= self.cfg.risk.window_ns {
             self.window_start_ns = now_ns;
             self.intents_in_window = 0;
+            self.discretionary_intents_in_window = 0;
         }
         let response = match convert::envelope(&request) {
             Err(why) => convert::invalid_response(&request.intent_id, why, now_ns),
@@ -372,6 +379,9 @@ impl<W: Write> Core<W> {
                             Intent::Place { .. } | Intent::Flatten | Intent::FlattenAll
                         ) {
                             self.intents_in_window += 1;
+                            if env.agent_id == risk::DISCRETIONARY {
+                                self.discretionary_intents_in_window += 1;
+                            }
                         }
                         match self.venue.submit(
                             &env,
@@ -416,8 +426,10 @@ impl<W: Write> Core<W> {
             peak_equity: acct.peak_equity,
             open_orders: self.venue.open_orders() as u32,
             intents_in_window: self.intents_in_window,
+            discretionary_intents_in_window: self.discretionary_intents_in_window,
             kill_switch: self.kill_switch,
             now_ns,
+            strategies: &[],
         }
     }
 
