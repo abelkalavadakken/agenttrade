@@ -85,6 +85,8 @@ adding a line here first.
 - blake3: state hashes for replay determinism
 - tokio-stream: broadcast channel as a gRPC server stream in crates/api
 - toml: config file parsing in crates/config
+- grpcio-tools, protobuf (Python): codegen from proto/ via agents/codegen.py;
+  generated code is gitignored and CI regenerates it
 - claude-agent-sdk (Python): the agent brain. Runs on the user's own
   Claude Code sign-in, so a subscription works without an API key.
   See docs/onboarding.md.
