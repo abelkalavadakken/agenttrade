@@ -1,0 +1,15 @@
+[package]
+name = "strategy"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+types = { path = "../types" }
+book = { path = "../book" }
+features = { path = "../features" }
+risk = { path = "../risk" }
+
+[dev-dependencies]
+feed = { path = "../feed" }
+crc32fast.workspace = true
