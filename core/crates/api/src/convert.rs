@@ -246,3 +246,135 @@ pub fn exec_event(e: &ExecEvent, unrealized: i64) -> v1::ExecEvent {
     };
     v1::ExecEvent { event: Some(event) }
 }
+
+/// Reverse of `envelope`, for recording strategy-originated intents.
+pub fn request(env: &IntentEnvelope) -> v1::SubmitIntentRequest {
+    let mut r = v1::SubmitIntentRequest {
+        intent_id: env.intent_id.clone(),
+        agent_id: env.agent_id.clone(),
+        source_sequence_id: env.source_sequence_id,
+        generated_time_ns: env.generated_time_ns,
+        venue: env.venue.clone(),
+        symbol: env.symbol.clone(),
+        ..Default::default()
+    };
+    match &env.intent {
+        Intent::Place {
+            side,
+            price,
+            stop,
+            take_profit,
+            qty,
+            tif,
+        } => {
+            r.intent_type = v1::IntentType::Place as i32;
+            r.side = *side as i32;
+            r.time_in_force = *tif as i32;
+            r.target_price = price.0;
+            r.stop_loss = stop.0;
+            r.take_profit = take_profit.0;
+            r.quantity = qty.0;
+        }
+        Intent::Cancel { order_id } => {
+            r.intent_type = v1::IntentType::Cancel as i32;
+            r.target_order_id = *order_id;
+        }
+        Intent::Flatten => r.intent_type = v1::IntentType::Flatten as i32,
+        Intent::FlattenAll => r.intent_type = v1::IntentType::FlattenAll as i32,
+        Intent::Noop => r.intent_type = v1::IntentType::Noop as i32,
+        Intent::Allocate(a) => {
+            r.intent_type = v1::IntentType::Allocate as i32;
+            r.allocation = Some(v1::Allocation {
+                strategy_id: a.strategy_id.clone(),
+                enabled: a.enabled,
+                size_multiplier_bps: a.size_multiplier_bps,
+                on_disable: match a.on_disable {
+                    OnDisable::Flatten => v1::OnDisable::Flatten as i32,
+                    OnDisable::Hold => v1::OnDisable::Hold as i32,
+                },
+            });
+        }
+        Intent::Tune {
+            strategy_id,
+            param,
+            value,
+        } => {
+            r.intent_type = v1::IntentType::Tune as i32;
+            r.tune = Some(v1::Tune {
+                strategy_id: strategy_id.clone(),
+                param: param.clone(),
+                value: *value,
+            });
+        }
+        Intent::ConfirmSetup {
+            strategy_id,
+            setup_id,
+            size_multiplier_bps,
+        } => {
+            r.intent_type = v1::IntentType::ConfirmSetup as i32;
+            r.setup = Some(v1::SetupDecision {
+                strategy_id: strategy_id.clone(),
+                setup_id: *setup_id,
+                size_multiplier_bps: *size_multiplier_bps,
+            });
+        }
+        Intent::RejectSetup {
+            strategy_id,
+            setup_id,
+        } => {
+            r.intent_type = v1::IntentType::RejectSetup as i32;
+            r.setup = Some(v1::SetupDecision {
+                strategy_id: strategy_id.clone(),
+                setup_id: *setup_id,
+                size_multiplier_bps: 0,
+            });
+        }
+    }
+    r
+}
+
+pub fn proposed_order(o: &strategy::Order) -> v1::ProposedOrder {
+    v1::ProposedOrder {
+        side: o.side as i32,
+        price: o.price.0,
+        stop: o.stop.0,
+        qty: o.qty.0,
+        time_in_force: o.tif as i32,
+        reason: o.reason.to_string(),
+    }
+}
+
+pub fn strategy_state(v: &strategy::StrategyView, p: Position) -> v1::StrategyState {
+    v1::StrategyState {
+        id: v.id.to_string(),
+        mode: match v.mode {
+            strategy::Mode::Autonomous => v1::StrategyMode::Autonomous as i32,
+            strategy::Mode::Gated => v1::StrategyMode::Gated as i32,
+        },
+        enabled: v.enabled,
+        size_multiplier_bps: v.size_multiplier_bps,
+        setup_active: v.pending.is_some(),
+        pending_setup_id: v.pending.map_or(0, |(id, _)| id),
+        pending_order: v.pending.map(|(_, o)| proposed_order(&o)),
+        params: v
+            .params
+            .iter()
+            .map(|p| v1::Param {
+                name: p.name.to_string(),
+                value: p.value,
+                min: p.min,
+                max: p.max,
+            })
+            .collect(),
+        net_qty: p.net_qty.0,
+        realized_pnl: p.realized_pnl,
+        counters: Some(v1::StrategyCounters {
+            setups: v.counters.setups,
+            confirmed: v.counters.confirmed,
+            rejected: v.counters.rejected,
+            expired: v.counters.expired,
+            orders_sent: v.counters.orders_sent,
+            orders_rejected_by_gate: v.counters.orders_rejected_by_gate,
+        }),
+    }
+}

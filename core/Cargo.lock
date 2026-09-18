@@ -78,6 +78,7 @@ dependencies = [
  "feed",
  "prost",
  "risk",
+ "strategy",
  "tape",
  "thiserror",
  "tokio",
