@@ -367,7 +367,10 @@ impl<W: Write> Core<W> {
                 let mut order_id = 0;
                 let verdict = match verdict {
                     Verdict::Approved => {
-                        if matches!(env.intent, Intent::Place { .. } | Intent::Flatten) {
+                        if matches!(
+                            env.intent,
+                            Intent::Place { .. } | Intent::Flatten | Intent::FlattenAll
+                        ) {
                             self.intents_in_window += 1;
                         }
                         match self.venue.submit(
@@ -568,6 +571,7 @@ fn exec_reason(e: ExecError) -> &'static str {
         ExecError::NotOpen(_) => "order not open",
         ExecError::EmptySide(_) => "book side empty",
         ExecError::Flat => "nothing to flatten",
+        ExecError::UnknownStrategy(_) => "unknown strategy",
     }
 }
 

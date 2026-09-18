@@ -24,43 +24,7 @@ impl Account {
     }
 
     pub fn fill(&mut self, side: Side, price: Price, qty: Qty) {
-        let signed = match side {
-            Side::Buy => qty.0,
-            Side::Sell => -qty.0,
-        };
-        let net = self.position.net_qty.0;
-        if net == 0 || net.signum() == signed.signum() {
-            self.increase(price, signed);
-        } else if signed.unsigned_abs() <= net.unsigned_abs() {
-            self.reduce(price, signed);
-        } else {
-            let closing = -net;
-            self.reduce(price, closing);
-            self.increase(price, signed - closing);
-        }
-    }
-
-    fn increase(&mut self, price: Price, signed: i64) {
-        let p = &mut self.position;
-        let old = p.net_qty.0.unsigned_abs() as i128;
-        let add = signed.unsigned_abs() as i128;
-        let avg = p.average_entry_price.0 as i128;
-        let new_avg = (avg * old + price.0 as i128 * add) / (old + add);
-        p.average_entry_price = Price(narrow(new_avg));
-        p.net_qty = Qty(p.net_qty.0 + signed);
-    }
-
-    fn reduce(&mut self, price: Price, signed: i64) {
-        let p = &mut self.position;
-        let closed = signed.unsigned_abs() as i128;
-        let direction = p.net_qty.0.signum() as i128;
-        let pnl = direction * (price.0 as i128 - p.average_entry_price.0 as i128) * closed
-            / self.qty_unit;
-        p.realized_pnl = narrow(p.realized_pnl as i128 + pnl);
-        p.net_qty = Qty(p.net_qty.0 + signed);
-        if p.net_qty.is_zero() {
-            p.average_entry_price = Price::ZERO;
-        }
+        apply_fill(&mut self.position, side, price, qty, self.qty_unit);
     }
 
     pub fn unrealized(&self, mark: Price) -> i64 {
@@ -92,6 +56,45 @@ impl Account {
 
     pub fn is_flat(&self) -> bool {
         self.position.net_qty.is_zero()
+    }
+}
+
+/// Increase, reduce or flip `p` by one fill. Used for the account and for
+/// every per-strategy position, so attribution uses the same arithmetic.
+pub fn apply_fill(p: &mut Position, side: Side, price: Price, qty: Qty, qty_unit: i128) {
+    let signed = match side {
+        Side::Buy => qty.0,
+        Side::Sell => -qty.0,
+    };
+    let net = p.net_qty.0;
+    if net == 0 || net.signum() == signed.signum() {
+        increase(p, price, signed);
+    } else if signed.unsigned_abs() <= net.unsigned_abs() {
+        reduce(p, price, signed, qty_unit);
+    } else {
+        let closing = -net;
+        reduce(p, price, closing, qty_unit);
+        increase(p, price, signed - closing);
+    }
+}
+
+fn increase(p: &mut Position, price: Price, signed: i64) {
+    let old = p.net_qty.0.unsigned_abs() as i128;
+    let add = signed.unsigned_abs() as i128;
+    let avg = p.average_entry_price.0 as i128;
+    let new_avg = (avg * old + price.0 as i128 * add) / (old + add);
+    p.average_entry_price = Price(narrow(new_avg));
+    p.net_qty = Qty(p.net_qty.0 + signed);
+}
+
+fn reduce(p: &mut Position, price: Price, signed: i64, qty_unit: i128) {
+    let closed = signed.unsigned_abs() as i128;
+    let direction = p.net_qty.0.signum() as i128;
+    let pnl = direction * (price.0 as i128 - p.average_entry_price.0 as i128) * closed / qty_unit;
+    p.realized_pnl = narrow(p.realized_pnl as i128 + pnl);
+    p.net_qty = Qty(p.net_qty.0 + signed);
+    if p.net_qty.is_zero() {
+        p.average_entry_price = Price::ZERO;
     }
 }
 

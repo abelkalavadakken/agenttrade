@@ -228,12 +228,14 @@ round trip. The proto shapes are in the proto PR.
 - Determinism: runner output over the fixtures is identical across two
   runs and is included in the hash.
 
-## Open decisions
+## Decisions, 2026-09-18
 
-1. Per-strategy positions live in exec, keyed by `agent_id`, versus in
-   the runner. Proposed exec, so fills attribute at the source.
-2. `Wake::Timer` from the core at 60 s, versus the agents keeping their
-   own clock. Proposed core, for replay.
-3. The confirm multiplier stacks on the allocation multiplier, versus
-   replacing it. Proposed stacking, so an allocation of 0.5x caps what a
-   confirm can do.
+1. Per-strategy positions live in exec, keyed by `agent_id`, where fills
+   attribute. A strategy reads its own position from `State` and never
+   keeps a private copy.
+2. The core emits `Wake::Timer`. Interval is config, default 60 s. Agents
+   may answer with Noop; the wake is recorded either way.
+3. No stacking. The confirm multiplier overrides the allocation multiplier
+   for that one order, clamped to `[0, allocation multiplier]`. A confirm
+   can shrink or skip, never enlarge beyond what allocation granted. The
+   effective multiplier is logged on the order's tape record.

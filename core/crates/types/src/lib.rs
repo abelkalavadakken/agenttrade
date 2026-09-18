@@ -102,14 +102,51 @@ pub enum Intent {
         side: Side,
         price: Price,
         stop: Price,
+        /// Zero means none. Required for discretionary orders.
+        take_profit: Price,
         qty: Qty,
         tif: TimeInForce,
     },
     Cancel {
         order_id: u64,
     },
+    /// Flatten the sender's own position (its `agent_id`).
     Flatten,
+    /// Flatten every position and cancel every order. Passes the kill switch.
+    FlattenAll,
     Noop,
+    Allocate(Allocation),
+    Tune {
+        strategy_id: String,
+        param: String,
+        value: i64,
+    },
+    ConfirmSetup {
+        strategy_id: String,
+        setup_id: u64,
+        size_multiplier_bps: i64,
+    },
+    RejectSetup {
+        strategy_id: String,
+        setup_id: u64,
+    },
+}
+
+/// What to do with a strategy's open position when it is disabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnDisable {
+    #[default]
+    Flatten,
+    Hold,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Allocation {
+    pub strategy_id: String,
+    pub enabled: bool,
+    /// 10_000 = 1x.
+    pub size_multiplier_bps: i64,
+    pub on_disable: OnDisable,
 }
 
 /// Who sent an intent and against which state. Travels alongside Intent.

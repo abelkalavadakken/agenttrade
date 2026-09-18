@@ -4,8 +4,8 @@ use exec::{CancelReason, ExecEvent};
 use features::Bar;
 use risk::Verdict;
 use types::{
-    Instrument, Intent, IntentEnvelope, OrderState, Position, Price, Qty, RejectionCode, Side,
-    TimeInForce,
+    Allocation, Instrument, Intent, IntentEnvelope, OnDisable, OrderState, Position, Price, Qty,
+    RejectionCode, Side, TimeInForce,
 };
 
 use crate::v1;
@@ -31,6 +31,7 @@ pub fn envelope(r: &v1::SubmitIntentRequest) -> Result<IntentEnvelope, Invalid> 
             side: side(r.side)?,
             price: Price(r.target_price),
             stop: Price(r.stop_loss),
+            take_profit: Price(r.take_profit),
             qty: Qty(r.quantity),
             tif: tif(r.time_in_force)?,
         },
@@ -41,7 +42,55 @@ pub fn envelope(r: &v1::SubmitIntentRequest) -> Result<IntentEnvelope, Invalid> 
             },
         },
         Ok(v1::IntentType::Flatten) => Intent::Flatten,
+        Ok(v1::IntentType::FlattenAll) => Intent::FlattenAll,
         Ok(v1::IntentType::Noop) => Intent::Noop,
+        Ok(v1::IntentType::Allocate) => {
+            let a = r.allocation.as_ref().ok_or(Invalid("allocation missing"))?;
+            if a.strategy_id.is_empty() {
+                return Err(Invalid("allocation.strategy_id empty"));
+            }
+            Intent::Allocate(Allocation {
+                strategy_id: a.strategy_id.clone(),
+                enabled: a.enabled,
+                size_multiplier_bps: a.size_multiplier_bps,
+                on_disable: match v1::OnDisable::try_from(a.on_disable) {
+                    Ok(v1::OnDisable::Hold) => OnDisable::Hold,
+                    _ => OnDisable::Flatten,
+                },
+            })
+        }
+        Ok(v1::IntentType::Tune) => {
+            let t = r.tune.as_ref().ok_or(Invalid("tune missing"))?;
+            if t.strategy_id.is_empty() || t.param.is_empty() {
+                return Err(Invalid("tune.strategy_id or tune.param empty"));
+            }
+            Intent::Tune {
+                strategy_id: t.strategy_id.clone(),
+                param: t.param.clone(),
+                value: t.value,
+            }
+        }
+        Ok(v1::IntentType::ConfirmSetup) => {
+            let d = r.setup.as_ref().ok_or(Invalid("setup missing"))?;
+            if d.strategy_id.is_empty() || d.setup_id == 0 {
+                return Err(Invalid("setup.strategy_id empty or setup_id zero"));
+            }
+            Intent::ConfirmSetup {
+                strategy_id: d.strategy_id.clone(),
+                setup_id: d.setup_id,
+                size_multiplier_bps: d.size_multiplier_bps,
+            }
+        }
+        Ok(v1::IntentType::RejectSetup) => {
+            let d = r.setup.as_ref().ok_or(Invalid("setup missing"))?;
+            if d.strategy_id.is_empty() || d.setup_id == 0 {
+                return Err(Invalid("setup.strategy_id empty or setup_id zero"));
+            }
+            Intent::RejectSetup {
+                strategy_id: d.strategy_id.clone(),
+                setup_id: d.setup_id,
+            }
+        }
         _ => return Err(Invalid("intent_type unspecified")),
     };
     if r.intent_id.is_empty() {
@@ -174,6 +223,7 @@ pub fn exec_event(e: &ExecEvent, unrealized: i64) -> v1::ExecEvent {
             price,
             qty,
             thin_book,
+            strategy_id,
             ns,
         } => Event::Fill(v1::Fill {
             order_id: *order_id,
@@ -182,7 +232,7 @@ pub fn exec_event(e: &ExecEvent, unrealized: i64) -> v1::ExecEvent {
             qty: qty.0,
             thin_book: *thin_book,
             ns: *ns,
-            strategy_id: String::new(), // attribution lands with crates/strategy
+            strategy_id: strategy_id.clone(),
         }),
         ExecEvent::Position {
             position: p,
