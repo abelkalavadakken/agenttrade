@@ -44,7 +44,7 @@ impl Breakout {
                 Param {
                     name: "volume_mult_bps",
                     value: 15_000,
-                    min: 10_000,
+                    min: 0,
                     max: 100_000,
                 },
                 Param {

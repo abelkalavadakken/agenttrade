@@ -99,11 +99,15 @@ impl Strategy for MrOfi {
         let in_position = !st.position.net_qty.is_zero();
 
         if in_position {
+            if self.exiting {
+                return None; // one flatten at a time; exec is working on it
+            }
             let entered = self.entered_ns.unwrap_or(st.now_ns);
             let flipped = ofi.signum() != 0 && ofi.signum() != self.entry_ofi_sign;
             let held_long_enough = st.now_ns - entered >= self.p("hold_ns");
             if flipped || held_long_enough {
                 self.entered_ns = None;
+                self.exiting = true;
                 self.cooldown_until_ns = st.now_ns + self.p("cooldown_ns");
                 return Some(Action::Flatten {
                     reason: if flipped {
@@ -115,6 +119,7 @@ impl Strategy for MrOfi {
             }
             return None;
         }
+        self.exiting = false;
 
         if st.open_orders > 0 || f.book_stale || st.book.is_stale() {
             return None;

@@ -126,7 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(task) = startup.as_mut() {
             if task.is_finished() {
                 if let Err(e) = task.await? {
-                    error!(error = %e, "startup intent rejected");
+                    error!(error = %e, "startup intent rejected; stopping");
+                    break;
                 }
                 startup = None;
             }
