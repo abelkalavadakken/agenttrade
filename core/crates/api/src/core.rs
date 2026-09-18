@@ -319,19 +319,25 @@ impl<W: Write> Core<W> {
             }
             CoreInput::Feed(FeedMsg::Event { recv_ns, event }) => {
                 // The client's own tracker decided a Silent or Disconnected
-                // resync; book and trade events it derived are ignored, the
-                // core derives its own from raw frames.
-                if let FeedEvent::Resync(_) = event {
-                    self.now_ns = recv_ns;
-                    self.tracker.expect_snapshot();
-                    self.features.on_stale();
-                }
+                // resync: recorded as a control marker so replay sees it.
+                // Book and trade events it derived are not inputs at all; the
+                // core derives its own from raw frames, so they must not
+                // touch state or the hash.
+                let FeedEvent::Resync(reason) = event else {
+                    return Ok(());
+                };
+                let text = format!("resync {reason:?}");
+                self.now_ns = recv_ns;
+                self.tape.append(recv_ns, SRC_CTL, text.as_bytes())?;
+                self.resync();
             }
             CoreInput::Feed(FeedMsg::Control { recv_ns, text }) => {
                 self.now_ns = recv_ns;
                 self.tape.append(recv_ns, SRC_CTL, text.as_bytes())?;
                 if text == "tick" {
                     fill |= self.tick(recv_ns)?;
+                } else if text.starts_with("resync ") {
+                    self.resync();
                 } else if text == "connected" {
                     self.venue_connected = true;
                     self.tracker.expect_snapshot();
@@ -390,6 +396,11 @@ impl<W: Write> Core<W> {
             Ok(env) => self.process_envelope(&env, now_ns)?,
         };
         Ok(response)
+    }
+
+    fn resync(&mut self) {
+        self.tracker.expect_snapshot();
+        self.features.on_stale();
     }
 
     /// Bars close, due acks and fills drain, strategies run, the timer wakes.

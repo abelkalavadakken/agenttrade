@@ -80,12 +80,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         first_ns.get_or_insert(rec.recv_ns);
         last_ns = rec.recv_ns;
         if rec.source_id != ws_id {
-            let text = String::from_utf8_lossy(&rec.bytes).into_owned();
-            if text == "connected" {
-                // The recorder subscribed on connect; the next snapshot is expected.
-                tracker.expect_snapshot();
+            if reader.source_name(rec.source_id) == Some("record.ctl") {
+                let text = String::from_utf8_lossy(&rec.bytes).into_owned();
+                if text == "connected" {
+                    // The recorder subscribed on connect; the next snapshot is expected.
+                    tracker.expect_snapshot();
+                }
+                if text != "tick" {
+                    controls.push(text);
+                }
             }
-            controls.push(text);
             continue;
         }
         let handled = tracker.on_frame(&rec.bytes);

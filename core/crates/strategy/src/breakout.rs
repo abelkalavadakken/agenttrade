@@ -104,7 +104,8 @@ impl Strategy for Breakout {
         }
         let high = range.iter().map(|b| b.high.0).max().unwrap();
         let low = range.iter().map(|b| b.low.0).min().unwrap();
-        let volume_ok = if st.features.volume_available {
+        // 0 switches the volume test off, for thin books and for tests.
+        let volume_ok = if st.features.volume_available && self.p("volume_mult_bps") > 0 {
             let avg = range.iter().map(|b| b.volume.0 as i128).sum::<i128>() / n as i128;
             last.volume.0 as i128 * 10_000 >= avg * self.p("volume_mult_bps") as i128
         } else {

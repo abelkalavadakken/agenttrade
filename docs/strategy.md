@@ -186,7 +186,7 @@ that bar above the N-bar average, is a setup worth asking about.
 | `lookback_bars` | 20 | 5 | 200 | bars |
 | `size` | 0.02 BTC | 0.0001 | 2 BTC | qty units |
 | `stop_ticks` | 200 | 10 | 20000 | ticks |
-| `volume_mult_bps` | 15_000 | 10_000 | 100_000 | bps of average |
+| `volume_mult_bps` | 15_000 | 0 | 100_000 | bps of average; 0 turns the volume test off |
 | `ttl_ns` | 120 s | 10 s | 900 s | ns |
 
 Rules, evaluated only when a bar closes (`bars.len()` changed):

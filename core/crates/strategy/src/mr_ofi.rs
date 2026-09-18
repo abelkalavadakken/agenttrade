@@ -146,6 +146,8 @@ impl Strategy for MrOfi {
         };
         self.entered_ns = Some(st.now_ns);
         self.entry_ofi_sign = ofi.signum();
+        // One entry per cooldown, whether or not the gate takes it.
+        self.cooldown_until_ns = st.now_ns + self.p("cooldown_ns");
         Some(Action::Place(Order {
             side,
             price,

@@ -12,6 +12,8 @@ fn main() {
     let mut verdicts: BTreeMap<(String, i32, String), u64> = BTreeMap::new();
     let mut fills: BTreeMap<(String, i32), (u64, i64)> = BTreeMap::new();
     let mut shown = 0;
+    let mut big_shown = 0;
+    let mut wakes: BTreeMap<i32, u64> = BTreeMap::new();
     let mut last_intent: Option<v1::SubmitIntentRequest> = None;
     let mut records = 0;
     loop {
@@ -61,10 +63,21 @@ fn main() {
                 if let Some(v1::exec_event::Event::Fill(f)) =
                     v1::ExecEvent::decode(rec.bytes.as_slice()).unwrap().event
                 {
+                    if f.qty > 1_000_000 && big_shown < 15 {
+                        println!(
+                            "{records:>6}  BIG FILL order {} side {} qty {} px {} thin {} {}",
+                            f.order_id, f.side, f.qty, f.price, f.thin_book, f.strategy_id
+                        );
+                        big_shown += 1;
+                    }
                     let e = fills.entry((f.strategy_id, f.side)).or_default();
                     e.0 += 1;
                     e.1 += f.qty;
                 }
+            }
+            7 => {
+                let w = v1::Wake::decode(rec.bytes.as_slice()).unwrap();
+                *wakes.entry(w.reason).or_default() += 1;
             }
             _ => {}
         }
@@ -74,6 +87,7 @@ fn main() {
     for (k, v) in &verdicts {
         println!("  {k:?} {v}");
     }
+    println!("wakes by reason {wakes:?}");
     println!("fills (strategy, side) -> (count, qty)");
     for (k, v) in &fills {
         println!("  {k:?} {v:?}");
