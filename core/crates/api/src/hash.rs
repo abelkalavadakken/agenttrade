@@ -3,6 +3,7 @@
 use book::Book;
 use exec::PaperVenue;
 use features::Bar;
+use strategy::Runner;
 
 const MAGIC: &[u8] = b"agenttrade.state.v1";
 
@@ -60,6 +61,7 @@ pub struct CoreState<'a> {
     pub sequence_id: u64,
     pub book: &'a Book,
     pub venue: &'a PaperVenue,
+    pub runner: &'a Runner,
     pub bar_count: usize,
     pub last_bar: Option<Bar>,
     pub order_flow_imbalance: i64,
@@ -84,6 +86,7 @@ fn encode(s: &CoreState, sink: &mut dyn FnMut(&[u8])) {
     w(s.book.is_stale() as i64);
     w(s.book.is_crossed() as i64);
     s.venue.hash_into(sink);
+    s.runner.hash_into(sink);
     let mut w = |v: i64| sink(&v.to_le_bytes());
     w(s.open_orders as i64);
     w(s.intents_in_window as i64);

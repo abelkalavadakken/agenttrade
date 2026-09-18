@@ -82,7 +82,11 @@ pub fn state_response(s: &StateSnapshot, venue: &str, symbol: &str) -> v1::GetSt
         current_position: Some(convert::position(s.position, s.unrealized_pnl)),
         features,
         available_equity: s.available_equity,
-        strategies: Vec::new(), // populated by crates/strategy
+        strategies: s
+            .strategies
+            .iter()
+            .map(|(v, p)| convert::strategy_state(v, *p))
+            .collect(),
     }
 }
 

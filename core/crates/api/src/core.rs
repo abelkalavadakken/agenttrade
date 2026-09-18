@@ -14,21 +14,24 @@ use feed::kraken::Tracker;
 use feed::FeedMsg;
 use prost::Message;
 use risk::{RiskConfig, RiskInputs, Verdict};
+use strategy::{Breakout, Context, MrOfi, Runner, RunnerOutput, StrategyView};
 use tokio::sync::{broadcast, oneshot, watch};
-use types::{FeedEvent, Instrument, Intent, Level, Position, RejectionCode};
+use types::{FeedEvent, Instrument, Intent, IntentEnvelope, Level, Position, RejectionCode};
 
 use crate::convert;
 use crate::hash::{CoreState, StateHasher};
 use crate::v1;
 
 /// Tape source table. Index is the source id.
-pub const SOURCES: [&str; 6] = [
+pub const SOURCES: [&str; 8] = [
     "kraken.ws",
     "record.ctl",
     "core.intent",
     "core.verdict",
     "core.exec",
     "core.hash",
+    "core.strategy",
+    "core.wake",
 ];
 pub const SRC_WS: u16 = 0;
 pub const SRC_CTL: u16 = 1;
@@ -36,6 +39,9 @@ pub const SRC_INTENT: u16 = 2;
 pub const SRC_VERDICT: u16 = 3;
 pub const SRC_EXEC: u16 = 4;
 pub const SRC_HASH: u16 = 5;
+/// Strategy-originated intents. Replay ignores them: the runner regenerates.
+pub const SRC_STRATEGY: u16 = 6;
+pub const SRC_WAKE: u16 = 7;
 
 /// Bars handed to agents. The ring holds 512; the observer reads 15.
 pub const SNAPSHOT_BARS: usize = 15;
@@ -53,6 +59,8 @@ pub struct CoreConfig {
     /// mid_price_update coalescing window on the core clock.
     pub mid_coalesce_ns: i64,
     pub channel_depth: usize,
+    /// Wake::Timer cadence, the agents' clock.
+    pub timer_interval_ns: i64,
 }
 
 impl CoreConfig {
@@ -84,6 +92,7 @@ impl CoreConfig {
             hash_every: 1_000,
             mid_coalesce_ns: 250_000_000,
             channel_depth: 4_096,
+            timer_interval_ns: 60_000_000_000,
         }
     }
 }
@@ -129,6 +138,7 @@ pub struct StateSnapshot {
     pub channel_full_events: u64,
     pub venue_connected: bool,
     pub book_stale: bool,
+    pub strategies: Vec<(StrategyView, Position)>,
 }
 
 impl StateSnapshot {
@@ -148,6 +158,7 @@ impl StateSnapshot {
             channel_full_events: 0,
             venue_connected: false,
             book_stale: true,
+            strategies: Vec::new(),
         }
     }
 }
@@ -158,6 +169,8 @@ pub struct Core<W: Write> {
     tracker: Tracker,
     features: Features,
     venue: PaperVenue,
+    runner: Runner,
+    last_timer_ns: i64,
     hasher: StateHasher,
     sequence_id: u64,
     now_ns: i64,
@@ -201,7 +214,12 @@ impl<W: Write> Core<W> {
         let tape = tape::Writer::new(writer, &SOURCES)?;
         let (state_tx, state_rx) = watch::channel(StateSnapshot::empty(cfg.starting_cash));
         let (events_tx, _) = broadcast::channel(1_024);
+        let mut runner = Runner::new();
+        runner.register(Box::new(MrOfi::new()));
+        runner.register(Box::new(Breakout::new()));
         let core = Self {
+            runner,
+            last_timer_ns: i64::MIN / 2,
             tracker: Tracker::new(cfg.instrument.clone(), cfg.depth as usize),
             features: Features::new(cfg.features),
             venue: PaperVenue::new(
@@ -242,6 +260,10 @@ impl<W: Write> Core<W> {
 
     pub fn venue(&self) -> &PaperVenue {
         &self.venue
+    }
+
+    pub fn runner(&self) -> &Runner {
+        &self.runner
     }
 
     pub fn sequence_id(&self) -> u64 {
@@ -293,6 +315,7 @@ impl<W: Write> Core<W> {
                     }
                 }
                 fill |= self.drain_exec()?;
+                fill |= self.run_strategies()?;
             }
             CoreInput::Feed(FeedMsg::Event { recv_ns, event }) => {
                 // The client's own tracker decided a Silent or Disconnected
@@ -307,7 +330,9 @@ impl<W: Write> Core<W> {
             CoreInput::Feed(FeedMsg::Control { recv_ns, text }) => {
                 self.now_ns = recv_ns;
                 self.tape.append(recv_ns, SRC_CTL, text.as_bytes())?;
-                if text == "connected" {
+                if text == "tick" {
+                    fill |= self.tick(recv_ns)?;
+                } else if text == "connected" {
                     self.venue_connected = true;
                     self.tracker.expect_snapshot();
                 } else if text.starts_with("disconnected") {
@@ -334,14 +359,9 @@ impl<W: Write> Core<W> {
                 return Ok(());
             }
             CoreInput::Tick(now_ns) => {
-                self.now_ns = self.now_ns.max(now_ns);
-                self.features.advance(now_ns);
-                if self.tracker.book().best_bid().is_some() {
-                    self.venue
-                        .on_book(self.tracker.book(), now_ns, &mut self.exec_out);
-                    fill |= self.drain_exec()?;
-                }
-                self.emit_mid();
+                // Recorded so replay sees the same ticks at the same tape positions.
+                self.tape.append(now_ns, SRC_CTL, b"tick")?;
+                fill |= self.tick(now_ns)?;
             }
         }
         self.advance_hash();
@@ -360,59 +380,250 @@ impl<W: Write> Core<W> {
         self.encode_buf.clear();
         request.encode(&mut self.encode_buf).expect("encode intent");
         self.tape.append(now_ns, SRC_INTENT, &self.encode_buf)?;
+        self.roll_window(now_ns);
+        let response = match convert::envelope(&request) {
+            Err(why) => {
+                let r = convert::invalid_response(&request.intent_id, why, now_ns);
+                self.write_verdict(&r, now_ns)?;
+                r
+            }
+            Ok(env) => self.process_envelope(&env, now_ns)?,
+        };
+        Ok(response)
+    }
 
+    /// Bars close, due acks and fills drain, strategies run, the timer wakes.
+    fn tick(&mut self, now_ns: i64) -> Result<bool, tape::Error> {
+        let mut fill = false;
+        self.now_ns = self.now_ns.max(now_ns);
+        self.features.advance(now_ns);
+        if self.tracker.book().best_bid().is_some() {
+            self.venue
+                .on_book(self.tracker.book(), now_ns, &mut self.exec_out);
+            fill |= self.drain_exec()?;
+        }
+        self.emit_mid();
+        fill |= self.run_strategies()?;
+        if self.now_ns - self.last_timer_ns >= self.cfg.timer_interval_ns {
+            self.last_timer_ns = self.now_ns;
+            self.wake(v1::Wake {
+                reason: v1::WakeReason::Timer as i32,
+                setup: None,
+                detail: String::new(),
+            })?;
+        }
+        Ok(fill)
+    }
+
+    fn roll_window(&mut self, now_ns: i64) {
         if now_ns - self.window_start_ns >= self.cfg.risk.window_ns {
             self.window_start_ns = now_ns;
             self.intents_in_window = 0;
             self.discretionary_intents_in_window = 0;
         }
-        let response = match convert::envelope(&request) {
-            Err(why) => convert::invalid_response(&request.intent_id, why, now_ns),
-            Ok(env) => {
-                let inputs = self.risk_inputs(now_ns);
-                let verdict = risk::check(&self.cfg.risk, &inputs, &env);
-                let mut order_id = 0;
-                let verdict = match verdict {
-                    Verdict::Approved => {
-                        if matches!(
-                            env.intent,
-                            Intent::Place { .. } | Intent::Flatten | Intent::FlattenAll
-                        ) {
-                            self.intents_in_window += 1;
-                            if env.agent_id == risk::DISCRETIONARY {
-                                self.discretionary_intents_in_window += 1;
-                            }
-                        }
-                        match self.venue.submit(
-                            &env,
-                            self.tracker.book(),
-                            now_ns,
-                            &mut self.exec_out,
-                        ) {
-                            Ok(id) => {
-                                order_id = id;
-                                Verdict::Approved
-                            }
-                            Err(e) => Verdict::Rejected {
-                                code: RejectionCode::InvalidIntent,
-                                reason: exec_reason(e),
-                            },
-                        }
+    }
+
+    fn write_verdict(
+        &mut self,
+        r: &v1::SubmitIntentResponse,
+        now_ns: i64,
+    ) -> Result<(), tape::Error> {
+        self.encode_buf.clear();
+        r.encode(&mut self.encode_buf).expect("encode verdict");
+        self.tape.append(now_ns, SRC_VERDICT, &self.encode_buf)
+    }
+
+    /// Gate, then act. Strategy-originated envelopes come here too, after
+    /// their own tape record under core.strategy.
+    fn process_envelope(
+        &mut self,
+        env: &IntentEnvelope,
+        now_ns: i64,
+    ) -> Result<v1::SubmitIntentResponse, tape::Error> {
+        let summaries = self.runner.summaries();
+        let verdict = {
+            let inputs = self.risk_inputs(now_ns, &summaries);
+            risk::check(&self.cfg.risk, &inputs, env)
+        };
+        let mut order_id = 0;
+        let verdict = match verdict {
+            Verdict::Approved => {
+                if matches!(
+                    env.intent,
+                    Intent::Place { .. } | Intent::Flatten | Intent::FlattenAll
+                ) {
+                    self.intents_in_window += 1;
+                    if env.agent_id == risk::DISCRETIONARY {
+                        self.discretionary_intents_in_window += 1;
                     }
-                    rejected => rejected,
-                };
-                convert::response(&env.intent_id, verdict, order_id, now_ns)
+                }
+                self.act(env, now_ns, &mut order_id)
+            }
+            rejected => {
+                self.runner.on_gate_rejected(&env.agent_id);
+                rejected
             }
         };
-        self.encode_buf.clear();
-        response
-            .encode(&mut self.encode_buf)
-            .expect("encode verdict");
-        self.tape.append(now_ns, SRC_VERDICT, &self.encode_buf)?;
+        let response = convert::response(&env.intent_id, verdict, order_id, now_ns);
+        self.write_verdict(&response, now_ns)?;
         Ok(response)
     }
 
-    fn risk_inputs(&self, now_ns: i64) -> RiskInputs<'_> {
+    /// The approved intent's effect. Verbs go to the runner, orders to exec.
+    fn act(&mut self, env: &IntentEnvelope, now_ns: i64, order_id: &mut u64) -> Verdict {
+        let outputs = match &env.intent {
+            Intent::Allocate(a) => {
+                let position = self.venue.strategy_position(&a.strategy_id);
+                let outs = {
+                    let snap = self.features.snapshot();
+                    let ctx = context(&self.tracker, &self.cfg, self.sequence_id, &snap, now_ns);
+                    self.runner.allocate(&ctx, a, position)
+                };
+                outs
+            }
+            Intent::Tune {
+                strategy_id,
+                param,
+                value,
+            } => {
+                if self.runner.tune(strategy_id, param, *value).is_err() {
+                    return Verdict::Rejected {
+                        code: RejectionCode::InvalidIntent,
+                        reason: "unknown strategy or param",
+                    };
+                }
+                Vec::new()
+            }
+            Intent::ConfirmSetup {
+                strategy_id,
+                setup_id,
+                size_multiplier_bps,
+            } => {
+                let snap = self.features.snapshot();
+                let ctx = context(&self.tracker, &self.cfg, self.sequence_id, &snap, now_ns);
+                self.runner
+                    .confirm(&ctx, strategy_id, *setup_id, *size_multiplier_bps)
+                    .into_iter()
+                    .collect()
+            }
+            Intent::RejectSetup {
+                strategy_id,
+                setup_id,
+            } => {
+                self.runner.reject(strategy_id, *setup_id);
+                Vec::new()
+            }
+            _ => {
+                return match self
+                    .venue
+                    .submit(env, self.tracker.book(), now_ns, &mut self.exec_out)
+                {
+                    Ok(id) => {
+                        *order_id = id;
+                        Verdict::Approved
+                    }
+                    Err(e) => Verdict::Rejected {
+                        code: RejectionCode::InvalidIntent,
+                        reason: exec_reason(e),
+                    },
+                };
+            }
+        };
+        // Runner outputs from a verb (a disable's flatten, a confirmed order)
+        // go through the gate like any strategy order. Their tape writes and
+        // hash updates are handled by the caller's normal path.
+        if let Err(e) = self.handle_runner_outputs(outputs, now_ns) {
+            tracing::error!(error = %e, "tape write during verb");
+        }
+        Verdict::Approved
+    }
+
+    /// One runner pass after a core event. Returns whether a fill happened
+    /// while acting on its outputs.
+    fn run_strategies(&mut self) -> Result<bool, tape::Error> {
+        let now_ns = self.now_ns;
+        let outputs = {
+            let snap = self.features.snapshot();
+            let ctx = context(&self.tracker, &self.cfg, self.sequence_id, &snap, now_ns);
+            let venue = &self.venue;
+            self.runner.on_event(&ctx, &|id| {
+                (venue.strategy_position(id), venue.open_orders_of(id) as u32)
+            })
+        };
+        self.handle_runner_outputs(outputs, now_ns)
+    }
+
+    fn handle_runner_outputs(
+        &mut self,
+        outputs: Vec<RunnerOutput>,
+        now_ns: i64,
+    ) -> Result<bool, tape::Error> {
+        let mut fill = false;
+        for o in outputs {
+            match o {
+                RunnerOutput::Intent {
+                    mut envelope,
+                    effective_multiplier_bps,
+                } => {
+                    // The effective multiplier rides on the intent id so the
+                    // tape record carries it without a proto field.
+                    envelope.intent_id =
+                        format!("{}@m{effective_multiplier_bps}", envelope.intent_id);
+                    self.encode_buf.clear();
+                    convert::request(&envelope)
+                        .encode(&mut self.encode_buf)
+                        .expect("encode strategy intent");
+                    self.tape.append(now_ns, SRC_STRATEGY, &self.encode_buf)?;
+                    self.roll_window(now_ns);
+                    self.process_envelope(&envelope, now_ns)?;
+                    fill |= self.drain_exec()?;
+                }
+                RunnerOutput::Wake(w) => {
+                    let snapshot = crate::server::state_response(
+                        &self.state_tx.borrow(),
+                        &self.cfg.instrument.venue,
+                        &self.cfg.instrument.symbol,
+                    );
+                    self.wake(v1::Wake {
+                        reason: v1::WakeReason::SetupActive as i32,
+                        setup: Some(v1::SetupActive {
+                            strategy_id: w.strategy_id.to_string(),
+                            setup_id: w.setup_id,
+                            order: Some(convert::proposed_order(&w.order)),
+                            snapshot: Some(snapshot),
+                            ttl_ms: w.ttl_ns / 1_000_000,
+                        }),
+                        detail: String::new(),
+                    })?;
+                }
+                RunnerOutput::Expired {
+                    strategy_id,
+                    setup_id,
+                } => {
+                    let text = format!("expired {strategy_id} {setup_id}");
+                    self.tape.append(now_ns, SRC_STRATEGY, text.as_bytes())?;
+                }
+            }
+        }
+        Ok(fill)
+    }
+
+    /// Recorded on the tape, then streamed. Never coalesced.
+    fn wake(&mut self, wake: v1::Wake) -> Result<(), tape::Error> {
+        self.encode_buf.clear();
+        wake.encode(&mut self.encode_buf).expect("encode wake");
+        self.tape.append(self.now_ns, SRC_WAKE, &self.encode_buf)?;
+        let _ = self
+            .events_tx
+            .send(self.market_event(v1::market_event::Event::Wake(wake)));
+        Ok(())
+    }
+
+    fn risk_inputs<'a>(
+        &'a self,
+        now_ns: i64,
+        strategies: &'a [risk::StrategySummary],
+    ) -> RiskInputs<'a> {
         let acct = self.venue.account();
         let mark = self.tracker.book().mid();
         RiskInputs {
@@ -429,7 +640,7 @@ impl<W: Write> Core<W> {
             discretionary_intents_in_window: self.discretionary_intents_in_window,
             kill_switch: self.kill_switch,
             now_ns,
-            strategies: &[],
+            strategies,
         }
     }
 
@@ -501,6 +712,7 @@ impl<W: Write> Core<W> {
             sequence_id: self.sequence_id,
             book: self.tracker.book(),
             venue: &self.venue,
+            runner: &self.runner,
             bar_count: snap.bars.len(),
             last_bar: snap.bars.last().copied(),
             order_flow_imbalance: snap.order_flow_imbalance,
@@ -572,8 +784,35 @@ impl<W: Write> Core<W> {
             channel_full_events: self.channel_full.load(Ordering::Relaxed),
             venue_connected: self.venue_connected,
             book_stale: book.is_stale(),
+            strategies: self
+                .runner
+                .views()
+                .into_iter()
+                .map(|v| {
+                    let p = self.venue.strategy_position(v.id);
+                    (v, p)
+                })
+                .collect(),
         };
         self.state_tx.send_replace(state);
+    }
+}
+
+/// Borrows only what the runner needs, so the runner itself can be mutable.
+fn context<'a>(
+    tracker: &'a Tracker,
+    cfg: &'a CoreConfig,
+    sequence_id: u64,
+    snap: &'a features::Snapshot<'a>,
+    now_ns: i64,
+) -> Context<'a> {
+    Context {
+        now_ns,
+        sequence_id,
+        book: tracker.book(),
+        features: snap,
+        venue: &cfg.instrument.venue,
+        symbol: &cfg.instrument.symbol,
     }
 }
 

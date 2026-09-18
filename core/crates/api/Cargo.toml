@@ -11,6 +11,7 @@ book = { path = "../book" }
 features = { path = "../features" }
 risk = { path = "../risk" }
 exec = { path = "../exec" }
+strategy = { path = "../strategy" }
 tape = { path = "../tape" }
 prost.workspace = true
 tonic.workspace = true

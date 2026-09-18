@@ -208,15 +208,20 @@ fn verify_hashes(args: &Args) -> Result<Verified, Box<dyn std::error::Error>> {
         mismatches: 0,
         final_hash: String::new(),
     };
+    // Tapes from the core carry their ticks as control records; tapes from
+    // bin/record predate the core and get ticks synthesized from tape time.
+    let synthesize_ticks = hash.is_none();
     let mut next_tick = None;
     while let Some(rec) = reader.next_record()? {
-        let boundary = rec.recv_ns.div_euclid(1_000_000_000) * 1_000_000_000;
-        let tick = *next_tick.get_or_insert(boundary);
-        if boundary > tick {
-            for t in (tick..boundary).step_by(1_000_000_000) {
-                core.handle(CoreInput::Tick(t + 1_000_000_000))?;
+        if synthesize_ticks {
+            let boundary = rec.recv_ns.div_euclid(1_000_000_000) * 1_000_000_000;
+            let tick = *next_tick.get_or_insert(boundary);
+            if boundary > tick {
+                for t in (tick..boundary).step_by(1_000_000_000) {
+                    core.handle(CoreInput::Tick(t + 1_000_000_000))?;
+                }
+                next_tick = Some(boundary);
             }
-            next_tick = Some(boundary);
         }
         let src = Some(rec.source_id);
         if src == ws {
