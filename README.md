@@ -26,9 +26,13 @@ release build, median of 5 runs.
 
 | commit | machine | events applied | crossed | checksum mismatches | p50 | p99 |
 |---|---|---|---|---|---|---|
-| 9eeff0e | Apple M2, 16 GB, macOS 26.6.2, rustc 1.98.1 | 4,491 | 0 | 0 | 416 ns | 625 ns |
+| 4b0a384 | Apple M2, 16 GB, macOS 26.6.2, rustc 1.98.1 | 15,600 | 0 | 0 | 708 ns | 792 ns |
 
-p99 varied between 584 ns and 834 ns across the 5 runs. p50 did not move.
+Tape: 600 s recorded 2026-09-18, machine awake, no reconnects, 15,600 book
+events (1 snapshot, 15,599 deltas) and 612 trades. p99 varied between 750 ns
+and 833 ns across the 5 runs; p50 did not move. The earlier row on the
+2026-09-12 tape read 416 ns p50 on a quieter book; the number moved with the
+tape and the day, not the code.
 
 ### Paper venue demo, Kraken BTC/USD
 
@@ -37,6 +41,14 @@ tape through feed, book, risk gate and paper venue with six scripted intents.
 
 | commit | tape | intents | fills | realized P&L | note |
 |---|---|---|---|---|---|
-| 54d9666 | 600 s, 2026-09-12, 4,491 book events | 3 approved, 3 rejected | 3 | -1.4 USD on 0.1 BTC round trip | paper venue, no fees, no queue position, optimistic |
+| 4b0a384 | 600 s, 2026-09-18, 15,600 book events | 3 approved, 3 rejected | 3 | +3.4 USD on 0.1 BTC round trip | paper venue, no fees, no queue position, optimistic |
 
 The three rejections are MissingStop, PriceOutOfBand and ExceedsSingleLossLimit.
+
+### Replay determinism
+
+`bin/replay --mode recorded` drives the core over the tape, re-injects
+recorded intents, and compares every StateHash record. The 2026-09-18 tape
+was recorded before the core wrote hashes, so it verifies 0 hashes; the
+first tape recorded by the entrypoint will carry them and this line will
+report the count.

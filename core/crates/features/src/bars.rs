@@ -69,7 +69,16 @@ impl Bars {
             return None;
         }
         let done = *forming;
-        let mut next = Bar::empty(done.close_ns);
+        // A clock leap past the whole ring (machine asleep for more than
+        // 512 minutes, or a test mixing clocks) is not walked minute by
+        // minute: the forming bar jumps to the current minute and the
+        // missing bars are simply absent. `closed()` shows the gap by time.
+        let next_open = if now_ns - done.close_ns >= RING as i64 * BAR_NS {
+            floor_minute(now_ns)
+        } else {
+            done.close_ns
+        };
+        let mut next = Bar::empty(next_open);
         if !done.gap {
             // Carry the close forward so a gap bar still shows the last price.
             next.open = done.close;

@@ -183,3 +183,15 @@ fn ring_holds_512_bars_oldest_first() {
     assert_eq!(bars[RING - 1].close.0, 1000 + n - 1);
     assert!(bars.windows(2).all(|w| w[0].close_ns == w[1].open_ns));
 }
+
+#[test]
+fn clock_leap_past_the_ring_jumps_instead_of_crawling() {
+    let mut f = trades_features();
+    f.on_trade(&trade(100, 1, 1), 1);
+    let far = 1_000_000 * BAR_NS + 7;
+    f.advance(far);
+    let s = f.snapshot();
+    assert_eq!(s.bars.len(), 1, "only the bar that had data closed");
+    assert_eq!(s.forming.open_ns, 1_000_000 * BAR_NS);
+    assert!(s.forming.gap);
+}
