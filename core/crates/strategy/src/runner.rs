@@ -361,6 +361,9 @@ impl Runner {
             for p in e.strategy.params() {
                 w(p.value);
             }
+            for v in e.strategy.state_words() {
+                w(v);
+            }
             let c = e.counters;
             for v in [
                 c.setups,

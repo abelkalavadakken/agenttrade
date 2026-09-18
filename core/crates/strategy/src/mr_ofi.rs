@@ -167,6 +167,15 @@ impl Strategy for MrOfi {
         SetupState::None
     }
 
+    fn state_words(&self) -> Vec<i64> {
+        vec![
+            self.entered_ns.unwrap_or(-1),
+            self.entry_ofi_sign,
+            self.cooldown_until_ns,
+            self.exiting as i64,
+        ]
+    }
+
     fn reset(&mut self) {
         self.entered_ns = None;
         self.entry_ofi_sign = 0;

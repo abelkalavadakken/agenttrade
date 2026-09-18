@@ -158,6 +158,15 @@ impl Strategy for Breakout {
         self.setup
     }
 
+    fn state_words(&self) -> Vec<i64> {
+        let setup = match self.setup {
+            SetupState::None => -1,
+            SetupState::Forming => -2,
+            SetupState::Active { setup_id, .. } => setup_id as i64,
+        };
+        vec![self.seen_bars as i64, setup]
+    }
+
     fn on_setup_cleared(&mut self) {
         self.setup = SetupState::None;
     }

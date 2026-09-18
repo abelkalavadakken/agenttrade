@@ -163,6 +163,9 @@ impl StateSnapshot {
     }
 }
 
+/// The core clock is monotonic: an input stamped earlier than the last one
+/// (a tick queued behind a later frame) does not move it back. Live and
+/// replay apply the same rule to the same sequence, so they agree.
 pub struct Core<W: Write> {
     cfg: CoreConfig,
     tape: tape::Writer<W>,
@@ -298,19 +301,20 @@ impl<W: Write> Core<W> {
         let mut fill = false;
         match input {
             CoreInput::Feed(FeedMsg::Raw { recv_ns, bytes }) => {
-                self.now_ns = recv_ns;
+                self.now_ns = self.now_ns.max(recv_ns);
                 self.tape.append(recv_ns, SRC_WS, &bytes)?;
                 let handled = self.tracker.on_frame(&bytes);
                 for e in handled.events {
                     match e {
                         FeedEvent::Book(_) => {
                             self.sequence_id += 1;
-                            self.features.on_book(self.tracker.book(), recv_ns);
+                            let now = self.now_ns;
+                            self.features.on_book(self.tracker.book(), now);
                             self.venue
-                                .on_book(self.tracker.book(), recv_ns, &mut self.exec_out);
+                                .on_book(self.tracker.book(), now, &mut self.exec_out);
                             self.emit_mid();
                         }
-                        FeedEvent::Trade(t) => self.features.on_trade(&t, recv_ns),
+                        FeedEvent::Trade(t) => self.features.on_trade(&t, self.now_ns),
                         FeedEvent::Resync(_) => self.features.on_stale(),
                     }
                 }
@@ -327,12 +331,12 @@ impl<W: Write> Core<W> {
                     return Ok(());
                 };
                 let text = format!("resync {reason:?}");
-                self.now_ns = recv_ns;
+                self.now_ns = self.now_ns.max(recv_ns);
                 self.tape.append(recv_ns, SRC_CTL, text.as_bytes())?;
                 self.resync();
             }
             CoreInput::Feed(FeedMsg::Control { recv_ns, text }) => {
-                self.now_ns = recv_ns;
+                self.now_ns = self.now_ns.max(recv_ns);
                 self.tape.append(recv_ns, SRC_CTL, text.as_bytes())?;
                 if text == "tick" {
                     fill |= self.tick(recv_ns)?;
@@ -352,7 +356,7 @@ impl<W: Write> Core<W> {
                 now_ns,
                 reply,
             } => {
-                self.now_ns = now_ns;
+                self.now_ns = self.now_ns.max(now_ns);
                 let response = self.intent(request, now_ns)?;
                 let _ = fill;
                 self.drain_exec()?;
