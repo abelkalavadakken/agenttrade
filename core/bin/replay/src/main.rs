@@ -233,7 +233,7 @@ fn verify_hashes(args: &Args) -> Result<Verified, Box<dyn std::error::Error>> {
             let request = api::v1::SubmitIntentRequest::decode(rec.bytes.as_slice())?;
             v.intents += 1;
             core.handle(CoreInput::Intent {
-                request,
+                request: Box::new(request),
                 now_ns: rec.recv_ns,
                 reply: None,
             })?;

@@ -182,6 +182,7 @@ pub fn exec_event(e: &ExecEvent, unrealized: i64) -> v1::ExecEvent {
             qty: qty.0,
             thin_book: *thin_book,
             ns: *ns,
+            strategy_id: String::new(), // attribution lands with crates/strategy
         }),
         ExecEvent::Position {
             position: p,

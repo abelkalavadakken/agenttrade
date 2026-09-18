@@ -95,6 +95,11 @@ enum IntentType {
   CANCEL = 2;
   FLATTEN = 3;
   NOOP = 4;
+  ALLOCATE = 5;
+  TUNE = 6;
+  CONFIRM_SETUP = 7;
+  REJECT_SETUP = 8;
+  FLATTEN_ALL = 9;
 }
 
 enum TimeInForce {
@@ -123,6 +128,9 @@ enum RejectionCode {
   PRICE_OUT_OF_BAND = 9;
   INVALID_INTENT = 10;
   INSTRUMENT_HALTED = 11;
+  PARAM_OUT_OF_BOUNDS = 12;
+  ALLOCATION_LIMIT = 13;
+  MISSING_EXIT_PLAN = 14;
 }
 
 // ---------------- RPC Payloads ----------------
@@ -176,6 +184,7 @@ message GetStateResponse {
   Position current_position = 7;
   MarketFeatures features = 8;
   int64 available_equity = 9;
+  repeated StrategyState strategies = 10;
 }
 
 message SubmitIntentRequest {
@@ -192,6 +201,81 @@ message SubmitIntentRequest {
   int64 stop_loss = 11; // Mandatory for PLACE intents
   int64 quantity = 12;
   uint64 target_order_id = 13; // CANCEL only: the order to cancel
+  Allocation allocation = 14;   // ALLOCATE
+  Tune tune = 15;               // TUNE
+  SetupDecision setup = 16;     // CONFIRM_SETUP, REJECT_SETUP
+  int64 take_profit = 17;       // discretionary PLACE: required exit
+}
+
+// ---------------- Strategies ----------------
+enum OnDisable {
+  ON_DISABLE_UNSPECIFIED = 0;
+  ON_DISABLE_FLATTEN = 1;
+  ON_DISABLE_HOLD = 2;
+}
+
+enum StrategyMode {
+  STRATEGY_MODE_UNSPECIFIED = 0;
+  AUTONOMOUS = 1;
+  GATED = 2;
+}
+
+message Allocation {
+  string strategy_id = 1;
+  bool enabled = 2;
+  int64 size_multiplier_bps = 3; // 10_000 = 1x
+  OnDisable on_disable = 4;
+}
+
+message Tune {
+  string strategy_id = 1;
+  string param = 2;
+  int64 value = 3;
+}
+
+message SetupDecision {
+  string strategy_id = 1;
+  uint64 setup_id = 2;
+  int64 size_multiplier_bps = 3; // CONFIRM only; stacks on the allocation multiplier
+}
+
+message Param {
+  string name = 1;
+  int64 value = 2;
+  int64 min = 3;
+  int64 max = 4;
+}
+
+message ProposedOrder {
+  OrderSide side = 1;
+  int64 price = 2;
+  int64 stop = 3;
+  int64 qty = 4;
+  TimeInForce time_in_force = 5;
+  string reason = 6;
+}
+
+message StrategyCounters {
+  uint64 setups = 1;
+  uint64 confirmed = 2;
+  uint64 rejected = 3;
+  uint64 expired = 4;
+  uint64 orders_sent = 5;
+  uint64 orders_rejected_by_gate = 6;
+}
+
+message StrategyState {
+  string id = 1;
+  StrategyMode mode = 2;
+  bool enabled = 3;
+  int64 size_multiplier_bps = 4;
+  bool setup_active = 5;
+  uint64 pending_setup_id = 6;   // 0 when none
+  ProposedOrder pending_order = 7;
+  repeated Param params = 8;
+  int64 net_qty = 9;
+  int64 realized_pnl = 10;
+  StrategyCounters counters = 11;
 }
 
 message SubmitIntentResponse {
@@ -206,6 +290,30 @@ message SubmitIntentResponse {
 message StreamEventsRequest {
   string venue = 1;
   string symbol = 2;
+}
+
+enum WakeReason {
+  WAKE_REASON_UNSPECIFIED = 0;
+  TIMER = 1;
+  REGIME_SHIFT = 2;
+  SETUP_ACTIVE = 3;
+  DRAWDOWN_LIMIT = 4;
+  VENUE_STATUS = 5;
+  OPERATOR = 6;
+}
+
+message SetupActive {
+  string strategy_id = 1;
+  uint64 setup_id = 2;
+  ProposedOrder order = 3;
+  GetStateResponse snapshot = 4;
+  int64 ttl_ms = 5;
+}
+
+message Wake {
+  WakeReason reason = 1;
+  SetupActive setup = 2;  // SETUP_ACTIVE only
+  string detail = 3;      // VENUE_STATUS, OPERATOR: free text
 }
 
 message RegimeShiftPayload {
@@ -241,6 +349,7 @@ message Fill {
   int64 qty = 4;
   bool thin_book = 5;
   int64 ns = 6;
+  string strategy_id = 7;
 }
 
 message PositionUpdate {
@@ -272,5 +381,6 @@ message MarketEvent {
     int64 mid_price_update = 5;
     Position position_update = 6;
     RegimeShiftPayload regime_shift = 7;
+    Wake wake = 8;
   }
 }

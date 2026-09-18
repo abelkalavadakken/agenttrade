@@ -6,7 +6,7 @@ pub mod hash;
 pub mod server;
 
 // Generated tonic code returns Status by value; 176 bytes is tonic's convention.
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err, clippy::large_enum_variant)]
 pub mod v1 {
     tonic::include_proto!("agenttrade.v1");
 }
