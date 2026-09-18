@@ -20,7 +20,9 @@ commit that produced it and the machine it ran on.
 
 ### Book apply, Kraken BTC/USD depth 10
 
-Tape: `tests/fixtures/acceptance.tape`, 900 s recorded 2026-09-18 by
+Tape: `tests/fixtures/acceptance.tape` (fetched by `tests/fixtures/fetch.sh`
+from the v0.1.0-core release; the first 30 s are in git as
+`acceptance-30s.tape`), 900 s recorded 2026-09-18 by
 `bin/agenttrade`, 52,775 book events (1 snapshot, 52,774 deltas) and 1,716
 trades. Latency is `Instant` around `Book::apply` in `bin/replay`, release
 build.

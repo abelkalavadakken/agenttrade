@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 # local assistant state
 .claude/
+tests/fixtures/acceptance.tape
