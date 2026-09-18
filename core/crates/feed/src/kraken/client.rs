@@ -99,6 +99,9 @@ async fn session(
     ws.send(Message::Text(wire::subscribe(symbol, cfg.depth)))
         .await
         .map_err(ws_err)?;
+    ws.send(Message::Text(wire::subscribe_trades(symbol)))
+        .await
+        .map_err(ws_err)?;
 
     let mut last_frame = Instant::now();
     let mut last_book = Instant::now();
