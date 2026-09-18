@@ -21,28 +21,47 @@ only thing outside it.
                    │ mpsc<(IntentEnvelope, oneshot<SubmitIntentResponse>)>
 ```
 
-**The core loop is the only code that mutates state.** It is one tokio
-task with a `select!` over three inputs, and it processes each input to
-completion before taking the next:
+**The core loop is the only code that mutates state.** It runs on a
+dedicated OS thread, not on tokio. It blocks on one bounded channel of
+`CoreInput` and processes each input to completion before taking the
+next. Async never touches the loop.
 
-1. `FeedMsg` from the feed client. Raw frames, parsed events, control
-   markers.
-2. Intent requests from gRPC handlers, each carrying a oneshot for the
-   reply.
-3. A 1 s tick, which only calls `features.advance(now)` so bars close on
-   a quiet market.
+```rust
+enum CoreInput {
+    Feed(FeedMsg),                                          // raw, event, control
+    Intent(IntentEnvelope, oneshot::Sender<SubmitIntentResponse>),
+    Tick(i64),                                              // now_ns, 1 s, for bar close
+}
+```
+
+**The channel.** `std::sync::mpsc::sync_channel::<CoreInput>(4096)`.
+Feed and gRPC live on tokio and send with a blocking `send` inside
+`spawn_blocking`, so a full channel blocks the sending task and never the
+runtime. When it fills:
+
+- the feed task blocks until the loop catches up, so TCP backpressure
+  reaches Kraken and the tape sees every frame in order;
+- the core counts each block in `channel_full_events`, reported by
+  `GetState` diagnostics and printed at shutdown;
+- nothing is dropped, ever. A dropped frame would be a checksum failure
+  later and a hole on the tape now.
+
+4,096 is about 2.5 s of the busiest Kraken book seen so far (1,564
+updates in 30 s); the core drains an event in microseconds, so the
+channel is expected to sit empty. The count proves it or disproves it.
 
 The gRPC handlers never touch core state. They read a `watch` channel
 that the loop publishes after every accepted event, and they send intents
-into an `mpsc`. This is the same shape as the feed: bytes in, events out,
-one owner.
+into the channel with a oneshot for the reply. This is the same shape as
+the feed: bytes in, events out, one owner.
 
 **Clock.** The loop has one clock, `now_ns`. Live: the receive timestamp
-of the message being processed, which is wall clock at arrival. Replay:
-the tape receive timestamp of the record being processed. Exec, features
-and risk take `now_ns` as an argument; none of them read a clock. The 1 s
-tick in replay is synthesized from tape timestamps, not from a timer, so
-recorded mode never waits.
+of the message being processed, which is wall clock at arrival, and a
+1 s `Tick` from a tokio timer so bars close on a quiet market. Replay:
+the tape receive timestamp of the record being processed, with ticks
+synthesized from tape timestamps, so recorded mode never waits. Exec,
+features and risk take `now_ns` as an argument; none of them read a
+clock.
 
 **Config.** `CoreConfig { instrument, depth, risk: RiskConfig, paper:
 PaperConfig, features: FeaturesConfig, starting_cash, listen_addr }`.
@@ -82,11 +101,10 @@ verify in the same order.
 
 ## 4. The state hash
 
-Computed in the core loop, after each accepted book event has been
-applied to book, features and exec, and after each intent has been fully
-processed. Written to the tape every 1,000 sequence ids and after every
-intent, so a 600 s tape carries a few hundred hashes rather than
-thousands.
+Updated in memory on every core-loop event: each accepted book event,
+each trade, each intent, each tick that closed a bar. A `StateHash`
+record goes to the tape every 1,000 events, on every risk verdict and on
+every fill. Replay verifies at each record.
 
 **Chained.** `hash_n = H(hash_{n-1} || encode(state_n))`, `hash_0 =
 H(magic)`. A divergence anywhere in the run shows in every later hash.
@@ -114,11 +132,10 @@ implemented per crate (`book::Book::hash_into`, `exec::PaperVenue::hash_into`,
 and so on), so each crate owns what of its state is hashed and no
 serialization library is involved.
 
-**Hash function.** BLAKE3, which the architecture note names. It is a new
-dependency: `blake3: state hashes for replay determinism` in CLAUDE.md.
-Asking before adding. The alternative without a dependency is
-`crc32fast` over the same bytes, which detects divergence but is
-32 bits; fine for catching bugs, weak as a fingerprint.
+**Hash function.** BLAKE3, which the architecture note names. It is the
+determinism proof and is quoted in README, so a 32-bit crc is not enough.
+One dependency, `blake3: state hashes for replay determinism`, in
+CLAUDE.md.
 
 **Recorded mode** in `bin/replay`: run the tape through the same core
 loop, re-inject each `core.intent` record at its tape position, and
@@ -157,8 +174,8 @@ gRPC `RESOURCE_EXHAUSTED`, never a silent drop.
 | event | when | cadence |
 |---|---|---|
 | `mid_price_update` | mid changed | coalesced to at most one per 250 ms of core clock; the latest mid wins |
-| `position_update` | after every fill | every fill, no coalescing |
-| `regime_shift` | never yet | nothing emits it; documented in features.md |
+| `position_update` | after every fill | never coalesced |
+| `regime_shift` | never yet | never coalesced; nothing emits it, see features.md |
 
 A slow subscriber that lags the broadcast buffer (1,024 events) is
 dropped with gRPC `DATA_LOSS`. Agents on a 60 s clock use `GetState`;
@@ -202,11 +219,13 @@ features crates already prove.
   `SubmitIntent` returns the gate's code, `StreamEvents` delivers a
   position update after a fill.
 
-## Open decisions
+## Decisions, 2026-09-18
 
-1. BLAKE3 as a new dependency, or crc32 over the same bytes.
-2. Hash cadence: every 1,000 sequence ids plus every intent.
-3. `mid_price_update` coalescing at 250 ms.
-4. The core loop as a tokio task versus a dedicated OS thread with a
-   blocking channel. Task is simpler and adequate at current rates; a
-   thread is the change to make if a bench shows scheduler jitter.
+1. BLAKE3, one justified dependency.
+2. Chained hash updated in memory on every core-loop event; tape record
+   every 1,000 events, on every risk verdict and every fill; replay
+   verifies at each record.
+3. 250 ms coalescing on mid updates only. Position updates and regime
+   shifts are never coalesced.
+4. Dedicated OS thread for the core loop, bounded channel of 4,096, feed
+   task blocks when full, blocks are counted, nothing is dropped.

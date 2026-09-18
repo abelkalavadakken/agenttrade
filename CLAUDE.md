@@ -82,6 +82,7 @@ adding a line here first.
 - thiserror: error enums
 - criterion: benches
 - proptest: property tests for book invariants
+- blake3: state hashes for replay determinism
 - toml: config file parsing in crates/config
 - claude-agent-sdk (Python): the agent brain. Runs on the user's own
   Claude Code sign-in, so a subscription works without an API key.
