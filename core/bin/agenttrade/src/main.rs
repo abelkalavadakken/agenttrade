@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use api::v1;
-use api::{spawn_core, CoreConfig, CoreInput, Service};
+use api::{spawn_core, Clock, CoreConfig, CoreInput, Service};
 use clap::Parser;
 use feed::kraken;
 use tape::{Mode, Reader};
@@ -73,12 +73,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handle = spawn_core(cfg, File::create(&path)?)?;
     info!(path = %path.display(), listen = %args.listen, "agenttrade up");
 
+    let clock = if args.tape.is_some() {
+        Clock::Core
+    } else {
+        Clock::Wall
+    };
     let service = Service::new(
         handle.sender(),
         handle.state.clone(),
         handle.events.clone(),
         instruments::kraken(),
-    );
+    )
+    .with_clock(clock);
     let addr = args.listen.parse()?;
     let server = tokio::spawn(async move {
         if let Err(e) = tonic::transport::Server::builder()
@@ -143,6 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.tune.clone(),
         args.venue.clone(),
         args.symbol.clone(),
+        clock,
     )));
     loop {
         if let Some(task) = startup.as_mut() {
@@ -197,6 +204,7 @@ async fn wait_then_apply(
     tune: Vec<String>,
     venue: String,
     symbol: String,
+    clock: Clock,
 ) -> Result<(), String> {
     let ready = async {
         loop {
@@ -215,7 +223,11 @@ async fn wait_then_apply(
     tokio::time::timeout(Duration::from_secs(60), ready)
         .await
         .map_err(|_| "no verified book within 60 s".to_string())??;
-    apply_startup_intents(&tx, &enable, &tune, &venue, &symbol).await
+    let now_ns = match clock {
+        Clock::Wall => feed::now_ns(),
+        Clock::Core => state.borrow().timestamp_ns,
+    };
+    apply_startup_intents(&tx, now_ns, &enable, &tune, &venue, &symbol).await
 }
 
 /// Feed a tape into the core the way the venue would: raw frames and control
@@ -271,6 +283,7 @@ fn pace_tape(mut reader: Reader<File>, tx: mpsc::Sender<feed::FeedMsg>) {
 /// the tape shows them and replay reproduces them.
 async fn apply_startup_intents(
     tx: &std::sync::mpsc::SyncSender<CoreInput>,
+    now_ns: i64,
     enable: &[String],
     tune: &[String],
     venue: &str,
@@ -315,7 +328,7 @@ async fn apply_startup_intents(
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let input = CoreInput::Intent {
             request: Box::new(r),
-            now_ns: feed::now_ns(),
+            now_ns,
             reply: Some(reply_tx),
         };
         let tx = tx.clone();
