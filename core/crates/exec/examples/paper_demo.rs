@@ -35,6 +35,10 @@ fn main() {
         max_intents_per_window: 100,
         window_ns: 60_000_000_000,
         max_drawdown_bps: 1_000,
+        max_strategies_enabled: 2,
+        max_size_multiplier_bps: 20_000,
+        discretionary_max_qty: Qty(100 * BTC),
+        discretionary_max_intents_per_window: 100,
     };
     let mut reader = Reader::new(File::open(&path).unwrap(), Mode::Fast).unwrap();
     let mut seq = 0u64;
@@ -129,8 +133,10 @@ fn main() {
                 peak_equity: acct.peak_equity,
                 open_orders: venue.open_orders() as u32,
                 intents_in_window: 0,
+                discretionary_intents_in_window: 0,
                 kill_switch: false,
                 now_ns: rec.recv_ns,
+                strategies: &[],
             };
             println!("t+{secs:>4}s  intent   {label}");
             match risk::check(&cfg, &inputs, &env) {
@@ -199,11 +205,12 @@ fn main() {
 }
 
 fn place(side: Side, price: impl Into<Px>, stop: i64, qty: i64) -> Intent {
+    let price = price.into().0;
     Intent::Place {
         side,
-        price: Price(price.into().0),
+        price: Price(price),
         stop: Price(stop),
-        take_profit: Price::ZERO,
+        take_profit: Price(price * 101 / 100),
         qty: Qty(qty),
         tif: TimeInForce::Gtc,
     }

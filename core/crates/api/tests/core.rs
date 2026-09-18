@@ -32,6 +32,7 @@ fn place(intent_id: &str, price: i64, stop: i64, qty: i64, seq: u64) -> v1::Subm
         time_in_force: v1::TimeInForce::Gtc as i32,
         target_price: price,
         stop_loss: stop,
+        take_profit: price + 10_000, // tests run as "discretionary": exit plan required
         quantity: qty,
         ..Default::default()
     }
