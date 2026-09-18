@@ -175,6 +175,74 @@ skip everything from Alignment onward.
 - `intents_in_window < max_intents_per_window`. The window is a fixed
   interval starting at the first intent; exec supplies the count.
 
+## Addendum, 2026-09-18: allocation, tuning, setups, discretionary
+
+The four LLM verbs and flatten-all pass the same `check`. Checks 6, 1 and
+2 (kill switch, market state, staleness) run first for every verb. Then:
+
+### ALLOCATE, `Allocation { strategy_id, enabled, size_multiplier_bps, on_disable }`
+
+- unknown `strategy_id`: `INVALID_INTENT`.
+- `enabled = true` when `enabled_strategies >= max_strategies_enabled`
+  (config, default 2): `ALLOCATION_LIMIT`.
+- `size_multiplier_bps` outside `[0, max_size_multiplier_bps]` (config,
+  default 20_000, 2x): `ALLOCATION_LIMIT`.
+- kill switch set: `KILL_SWITCH_ACTIVE`, including disables. Flatten-all is
+  the only verb that passes a kill switch.
+
+### TUNE, `Tune { strategy_id, param, value }`
+
+- unknown strategy or param: `INVALID_INTENT`.
+- `value` outside the param's hard `[min, max]`: `PARAM_OUT_OF_BOUNDS`.
+  The bounds are the strategy's, compiled in; there is no config to widen
+  them.
+- rate limited with the same window as intents.
+
+### CONFIRM_SETUP, REJECT_SETUP, `SetupDecision { strategy_id, setup_id, size_multiplier_bps }`
+
+- setup not active or id mismatch: `INVALID_INTENT`, reason "setup not
+  active".
+- confirm multiplier outside `[0, max_size_multiplier_bps]`:
+  `ALLOCATION_LIMIT`. The released order then runs the full PLACE checks
+  (alignment, band, stop, 1% rule, leverage, rate) against the live book
+  with `agent_id = strategy_id`; a stale proposed price rejects with
+  `PRICE_OUT_OF_BAND` and the setup is cleared, counted under
+  `orders_rejected_by_gate`.
+
+### FLATTEN_ALL
+
+Always available, including under the kill switch and on a stale book,
+because the exit is the safe direction. Skips everything after check 1's
+connectivity test. Cancels every open order, flattens every strategy
+position and the discretionary position.
+
+### Discretionary PLACE profile
+
+A PLACE with `agent_id` not equal to a strategy id is discretionary and
+runs under `RiskProfile::Discretionary`, which is the standard profile
+with these overrides (config, defaults shown):
+
+| rule | standard | discretionary |
+|---|---|---|
+| max qty per order | none beyond the 1% rule | `discretionary_max_qty`, default 0.01 BTC |
+| intents per window | `max_intents_per_window` | `discretionary_max_intents_per_window`, default 5 |
+| order type | limit | limit only; the proto has no market type, so this is: price must be inside the band and `tif` in {GTC, IOC} |
+| exit plan | `stop_loss` required | `stop_loss` and `take_profit` required, on the correct sides; `take_profit` becomes a resting exit attached to the fill, reason "take_profit" |
+| attribution | `agent_id` | `strategy_id = "discretionary"`; P&L under that id |
+| when a strategy is in position on the same side | allowed | allowed; both positions are tracked separately, the account net is what leverage sees |
+
+Missing `take_profit` on a discretionary PLACE: `MISSING_EXIT_PLAN`.
+
+### New codes, proto PR
+
+`PARAM_OUT_OF_BOUNDS = 12`, `ALLOCATION_LIMIT = 13`, `MISSING_EXIT_PLAN = 14`.
+
+### Inputs added
+
+`RiskInputs` gains `strategies: &[StrategySummary { id, enabled, setup_active: Option<u64> }]`
+and `RiskConfig` gains `max_strategies_enabled`, `max_size_multiplier_bps`,
+`discretionary_max_qty`, `discretionary_max_intents_per_window`.
+
 ## What risk does not do
 
 Risk does not mutate state, does not touch the venue, and does not know
