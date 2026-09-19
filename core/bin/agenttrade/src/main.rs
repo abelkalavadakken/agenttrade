@@ -1,14 +1,20 @@
 //! The entrypoint. Feed client, core thread, 1 s ticks and the gRPC server in
 //! one process, writing a tape with hashes. See docs/api.md section 1.
+//!
+//! `--tape <file>` replaces the venue with a recorded tape read at its
+//! recorded pace: live mode in docs/api.md section 4. The core, the gRPC
+//! server and the wakes are the same; only the frames come from disk.
+//! Ticks come from the tape too, so the core clock is tape time.
 
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use api::v1;
-use api::{spawn_core, CoreConfig, CoreInput, Service};
+use api::{spawn_core, Clock, CoreConfig, CoreInput, Service};
 use clap::Parser;
 use feed::kraken;
+use tape::{Mode, Reader};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 use types::instruments;
@@ -37,6 +43,9 @@ struct Args {
     timer_secs: u64,
     #[arg(long, default_value_t = 10)]
     depth: u32,
+    /// Replay this tape at recorded pace instead of connecting to the venue.
+    #[arg(long)]
+    tape: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -64,12 +73,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handle = spawn_core(cfg, File::create(&path)?)?;
     info!(path = %path.display(), listen = %args.listen, "agenttrade up");
 
+    let clock = if args.tape.is_some() {
+        Clock::Core
+    } else {
+        Clock::Wall
+    };
     let service = Service::new(
         handle.sender(),
         handle.state.clone(),
         handle.events.clone(),
         instruments::kraken(),
-    );
+    )
+    .with_clock(clock);
     let addr = args.listen.parse()?;
     let server = tokio::spawn(async move {
         if let Err(e) = tonic::transport::Server::builder()
@@ -82,12 +97,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let (feed_tx, mut feed_rx) = mpsc::channel(4_096);
-    let client = tokio::spawn(kraken::run(
-        kraken::Config::kraken(instrument, args.depth),
-        feed_tx,
-    ));
+    let client = match &args.tape {
+        Some(tape) => {
+            let reader = Reader::new(File::open(tape)?, Mode::Paced)?;
+            info!(tape = %tape.display(), "replaying at recorded pace");
+            tokio::task::spawn_blocking(move || pace_tape(reader, feed_tx))
+        }
+        None => tokio::spawn(kraken::run(
+            kraken::Config::kraken(instrument, args.depth),
+            feed_tx,
+        )),
+    };
     let tick_tx = handle.sender();
+    let from_tape = args.tape.is_some();
     let ticker = tokio::spawn(async move {
+        // A tape carries its own ticks; wall-clock ticks would run the core
+        // clock forward past the tape.
+        if from_tape {
+            return;
+        }
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -121,6 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.tune.clone(),
         args.venue.clone(),
         args.symbol.clone(),
+        clock,
     )));
     loop {
         if let Some(task) = startup.as_mut() {
@@ -175,6 +204,7 @@ async fn wait_then_apply(
     tune: Vec<String>,
     venue: String,
     symbol: String,
+    clock: Clock,
 ) -> Result<(), String> {
     let ready = async {
         loop {
@@ -193,13 +223,67 @@ async fn wait_then_apply(
     tokio::time::timeout(Duration::from_secs(60), ready)
         .await
         .map_err(|_| "no verified book within 60 s".to_string())??;
-    apply_startup_intents(&tx, &enable, &tune, &venue, &symbol).await
+    let now_ns = match clock {
+        Clock::Wall => feed::now_ns(),
+        Clock::Core => state.borrow().timestamp_ns,
+    };
+    apply_startup_intents(&tx, now_ns, &enable, &tune, &venue, &symbol).await
+}
+
+/// Feed a tape into the core the way the venue would: raw frames and control
+/// records, in order, at recorded gaps. Recorded intents, verdicts, exec
+/// events, hashes, strategy records and wakes are skipped; the core
+/// regenerates them from the frames, and live agents supply the intents.
+fn pace_tape(mut reader: Reader<File>, tx: mpsc::Sender<feed::FeedMsg>) {
+    let raw = reader
+        .sources()
+        .iter()
+        .position(|s| s == "kraken.ws")
+        .map(|i| i as u16);
+    let ctl = reader
+        .sources()
+        .iter()
+        .position(|s| s == "record.ctl")
+        .map(|i| i as u16);
+    loop {
+        let rec = match reader.next_record() {
+            Ok(Some(rec)) => rec,
+            Ok(None) => {
+                info!("tape exhausted");
+                break;
+            }
+            Err(e) => {
+                error!(error = %e, "tape read stopped");
+                break;
+            }
+        };
+        let msg = if Some(rec.source_id) == raw {
+            feed::FeedMsg::Raw {
+                recv_ns: rec.recv_ns,
+                bytes: rec.bytes,
+            }
+        } else if Some(rec.source_id) == ctl {
+            match String::from_utf8(rec.bytes) {
+                Ok(text) => feed::FeedMsg::Control {
+                    recv_ns: rec.recv_ns,
+                    text,
+                },
+                Err(_) => continue,
+            }
+        } else {
+            continue;
+        };
+        if tx.blocking_send(msg).is_err() {
+            break; // the core stopped first: deadline or Ctrl-C
+        }
+    }
 }
 
 /// Startup allocations and tunes go through the gate like any intent, so
 /// the tape shows them and replay reproduces them.
 async fn apply_startup_intents(
     tx: &std::sync::mpsc::SyncSender<CoreInput>,
+    now_ns: i64,
     enable: &[String],
     tune: &[String],
     venue: &str,
@@ -244,7 +328,7 @@ async fn apply_startup_intents(
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let input = CoreInput::Intent {
             request: Box::new(r),
-            now_ns: feed::now_ns(),
+            now_ns,
             reply: Some(reply_tx),
         };
         let tx = tx.clone();

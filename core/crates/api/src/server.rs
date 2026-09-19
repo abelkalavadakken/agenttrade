@@ -22,6 +22,17 @@ pub struct Service {
     state: watch::Receiver<StateSnapshot>,
     events: broadcast::Sender<v1::MarketEvent>,
     instruments: Vec<Instrument>,
+    clock: Clock,
+}
+
+/// Where an intent's `now_ns` comes from. Live: the wall clock, which is
+/// also what the feed stamps. Tape replay: the core's own clock, because
+/// the core takes the max of every input's time and a wall-clock intent
+/// would jump it hours past the tape and freeze bars, TTLs and timer wakes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Clock {
+    Wall,
+    Core,
 }
 
 impl Service {
@@ -36,6 +47,19 @@ impl Service {
             state,
             events,
             instruments,
+            clock: Clock::Wall,
+        }
+    }
+
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    fn intent_now_ns(&self) -> i64 {
+        match self.clock {
+            Clock::Wall => now_ns(),
+            Clock::Core => self.state.borrow().timestamp_ns,
         }
     }
 
@@ -112,7 +136,7 @@ impl AgentCoreService for Service {
         let (reply_tx, reply_rx) = oneshot::channel();
         let input = CoreInput::Intent {
             request: Box::new(request),
-            now_ns: now_ns(),
+            now_ns: self.intent_now_ns(),
             reply: Some(reply_tx),
         };
         let tx = self.tx.clone();

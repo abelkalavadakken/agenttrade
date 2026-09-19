@@ -13,4 +13,4 @@ pub mod v1 {
 
 pub use core::{spawn_core, Core, CoreConfig, CoreHandle, CoreInput, StateSnapshot, SOURCES};
 pub use hash::StateHasher;
-pub use server::Service;
+pub use server::{Clock, Service};
